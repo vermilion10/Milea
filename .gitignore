@@ -1,0 +1,38 @@
+*.iml
+.gradle/
+/local.properties
+.idea/
+.caches/
+.fleet/
+.kotlin/
+/build
+/captures
+.externalNativeBuild
+.cxx
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+
+# Signing keys & credentials -- never commit these
+*.jks
+*.keystore
+*.p12
+*.pfx
+key.properties
+local.properties
+
+# Secrets / env files
+.env
+.env.*
+!.env.example
+
+# Logs & dumps
+*.log
+hs_err_pid*
+*.hprof
+
+# Build artifacts (safety net outside /build)
+*.apk
+*.aab
+*.ap_
