@@ -23,6 +23,7 @@ import com.github.vermilion10.milea.data.model.DistanceUnit
 import com.github.vermilion10.milea.data.model.ExpenseCategory
 import com.github.vermilion10.milea.data.model.TripCategory
 import com.github.vermilion10.milea.domain.FuelEstimate
+import com.github.vermilion10.milea.util.LocalConsumptionUnit
 import com.github.vermilion10.milea.util.Units
 import java.text.SimpleDateFormat
 import java.util.Calendar
@@ -295,7 +296,7 @@ private fun FuelGaugeContent(estimate: FuelEstimate.Available, unit: DistanceUni
     Spacer(Modifier.height(10.dp))
     Text(
         "${Units.formatDistance(estimate.distanceSinceFillKm, unit)} since last fill-up · " +
-            Units.formatConsumption(estimate.litersPer100Km, unit) + " avg",
+            Units.formatConsumption(estimate.litersPer100Km, unit, LocalConsumptionUnit.current) + " avg",
         style = MaterialTheme.typography.bodySmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant
     )

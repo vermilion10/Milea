@@ -6,6 +6,7 @@ import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
+import com.github.vermilion10.milea.util.ConsumptionUnit
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import javax.inject.Inject
@@ -33,6 +34,7 @@ class SettingsRepository @Inject constructor(
         val KEY_DYNAMIC_COLOR = booleanPreferencesKey("dynamic_color")
         val KEY_CURRENCY_SYMBOL = stringPreferencesKey("currency_symbol")
         val KEY_CURRENCY_DECIMALS = intPreferencesKey("currency_decimals")
+        val KEY_CONSUMPTION_UNIT = stringPreferencesKey("consumption_unit")
     }
 
     val autoDetectEnabled: Flow<Boolean> = dataStore.data.map { prefs ->
@@ -53,6 +55,16 @@ class SettingsRepository @Inject constructor(
             symbol = prefs[KEY_CURRENCY_SYMBOL] ?: "$",
             decimals = prefs[KEY_CURRENCY_DECIMALS] ?: 2
         )
+    }
+
+    val consumptionUnit: Flow<ConsumptionUnit> = dataStore.data.map { prefs ->
+        prefs[KEY_CONSUMPTION_UNIT]
+            ?.let { runCatching { ConsumptionUnit.valueOf(it) }.getOrNull() }
+            ?: ConsumptionUnit.AUTO
+    }
+
+    suspend fun setConsumptionUnit(unit: ConsumptionUnit) {
+        dataStore.edit { it[KEY_CONSUMPTION_UNIT] = unit.name }
     }
 
     suspend fun setAutoDetectEnabled(enabled: Boolean) {

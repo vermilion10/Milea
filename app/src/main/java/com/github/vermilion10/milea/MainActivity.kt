@@ -17,6 +17,8 @@ import com.github.vermilion10.milea.data.repository.CurrencySettings
 import com.github.vermilion10.milea.data.repository.SettingsRepository
 import com.github.vermilion10.milea.ui.navigation.MileaNavigation
 import com.github.vermilion10.milea.ui.theme.MileaTheme
+import com.github.vermilion10.milea.util.ConsumptionUnit
+import com.github.vermilion10.milea.util.LocalConsumptionUnit
 import com.github.vermilion10.milea.util.LocalMoney
 import com.github.vermilion10.milea.util.MoneyFormat
 import dagger.hilt.android.AndroidEntryPoint
@@ -36,9 +38,14 @@ class MainActivity : ComponentActivity() {
             val currency by settingsRepository.currency
                 .collectAsStateWithLifecycle(CurrencySettings())
             val money = remember(currency) { MoneyFormat(currency) }
+            val consumptionUnit by settingsRepository.consumptionUnit
+                .collectAsStateWithLifecycle(ConsumptionUnit.AUTO)
 
             MileaTheme(themeMode = appearance.themeMode, dynamicColor = appearance.dynamicColor) {
-                CompositionLocalProvider(LocalMoney provides money) {
+                CompositionLocalProvider(
+                    LocalMoney provides money,
+                    LocalConsumptionUnit provides consumptionUnit
+                ) {
                     Surface(
                         modifier = Modifier.fillMaxSize(),
                         color = MaterialTheme.colorScheme.background

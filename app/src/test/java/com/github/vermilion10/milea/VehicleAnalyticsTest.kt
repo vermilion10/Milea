@@ -1,5 +1,6 @@
 package com.github.vermilion10.milea
 
+import com.github.vermilion10.milea.data.model.DistanceUnit
 import com.github.vermilion10.milea.data.model.Expense
 import com.github.vermilion10.milea.data.model.ExpenseCategory
 import com.github.vermilion10.milea.data.model.Fillup
@@ -8,6 +9,8 @@ import com.github.vermilion10.milea.data.model.Vehicle
 import com.github.vermilion10.milea.domain.FuelEstimate
 import com.github.vermilion10.milea.domain.StatsPeriod
 import com.github.vermilion10.milea.domain.VehicleAnalytics
+import com.github.vermilion10.milea.util.ConsumptionUnit
+import com.github.vermilion10.milea.util.Units
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -164,6 +167,16 @@ class VehicleAnalyticsTest {
         assertEquals(420f, stats.cost.highestBill!!, 0.001f)
         assertEquals(1000f, stats.distance.totalKm, 0.001f)
         assertEquals(1130f / 1000f, stats.cost.costPerKm!!, 0.0001f)
+    }
+
+    @Test
+    fun consumptionConvertsToChosenUnit() {
+        val km = DistanceUnit.KILOMETERS
+        assertEquals(5f, Units.consumption(5f, km, ConsumptionUnit.AUTO), 0.001f)
+        assertEquals(20f, Units.consumption(5f, km, ConsumptionUnit.KM_PER_L), 0.001f)
+        assertEquals(47.04f, Units.consumption(5f, km, ConsumptionUnit.MPG_US), 0.01f)
+        assertEquals(56.50f, Units.consumption(5f, km, ConsumptionUnit.MPG_UK), 0.01f)
+        assertEquals(47.04f, Units.consumption(5f, DistanceUnit.MILES, ConsumptionUnit.AUTO), 0.01f)
     }
 
     @Test

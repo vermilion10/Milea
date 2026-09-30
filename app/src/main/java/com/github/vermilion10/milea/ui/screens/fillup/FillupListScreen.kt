@@ -32,6 +32,7 @@ import com.github.vermilion10.milea.domain.VehicleData
 import com.github.vermilion10.milea.domain.VehicleDataSource
 import com.github.vermilion10.milea.ui.components.*
 import com.github.vermilion10.milea.util.LocalMoney
+import com.github.vermilion10.milea.util.LocalConsumptionUnit
 import com.github.vermilion10.milea.util.Units
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.*
@@ -160,7 +161,7 @@ fun FillupListScreen(
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         StatTile(
                             label = "Avg consumption",
-                            value = state.avgConsumption?.let { Units.formatConsumption(it, unit) } ?: "--",
+                            value = state.avgConsumption?.let { Units.formatConsumption(it, unit, LocalConsumptionUnit.current) } ?: "--",
                             modifier = Modifier.weight(1f),
                             containerColor = MaterialTheme.colorScheme.primaryContainer,
                             contentColor = MaterialTheme.colorScheme.onPrimaryContainer
@@ -277,12 +278,12 @@ private fun FillupItem(row: FillupRow, unit: DistanceUnit, onClick: () -> Unit) 
             row.litersPer100Km?.let {
                 Column(horizontalAlignment = Alignment.End) {
                     Text(
-                        String.format(java.util.Locale.getDefault(), "%.1f", Units.consumption(it, unit)),
+                        String.format(java.util.Locale.getDefault(), "%.1f", Units.consumption(it, unit, LocalConsumptionUnit.current)),
                         style = MaterialTheme.typography.titleMedium,
                         color = MaterialTheme.colorScheme.primary
                     )
                     Text(
-                        Units.consumptionLabel(unit),
+                        Units.consumptionLabel(unit, LocalConsumptionUnit.current),
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )

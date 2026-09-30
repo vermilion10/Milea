@@ -56,6 +56,7 @@ See [`docs/PRD.md`](docs/PRD.md) for the original product requirements this was 
 ### Settings & data
 - Material 3 design with dynamic color (Android 12+), plus System / Light / Dark theme
 - Currency symbol and decimal places (presets for Rp, $, €, £, RM, ¥, ₹), used everywhere amounts are shown
+- Fuel consumption shown as L/100km, km/L, mpg (US) or mpg (UK), or automatically by the vehicle's distance unit
 - CSV export (trips / fill-ups / expenses / all) with share sheet
 - Encrypted local backup and restore (password-protected)
 - Fully offline trip recording

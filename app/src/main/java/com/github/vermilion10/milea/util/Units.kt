@@ -1,5 +1,6 @@
 package com.github.vermilion10.milea.util
 
+import androidx.compose.runtime.staticCompositionLocalOf
 import com.github.vermilion10.milea.data.model.DistanceUnit
 import java.util.Locale
 
@@ -20,11 +21,24 @@ object Units {
     fun fuelLabel(unit: DistanceUnit): String =
         if (unit == DistanceUnit.MILES) "gal" else "L"
 
-    fun consumption(l100km: Float, unit: DistanceUnit): Float =
-        if (unit == DistanceUnit.MILES) L100KM_TO_MPG / l100km else l100km
+    private const val L100KM_TO_MPG_UK = 282.480936f
 
-    fun consumptionLabel(unit: DistanceUnit): String =
-        if (unit == DistanceUnit.MILES) "mpg" else "L/100km"
+    private fun resolve(unit: DistanceUnit, pref: ConsumptionUnit): ConsumptionUnit = when (pref) {
+        ConsumptionUnit.AUTO -> if (unit == DistanceUnit.MILES) ConsumptionUnit.MPG_US else ConsumptionUnit.L_PER_100KM
+        else -> pref
+    }
+
+    /** Converts stored L/100km into the chosen display unit. */
+    fun consumption(l100km: Float, unit: DistanceUnit, pref: ConsumptionUnit = ConsumptionUnit.AUTO): Float =
+        when (resolve(unit, pref)) {
+            ConsumptionUnit.KM_PER_L -> 100f / l100km
+            ConsumptionUnit.MPG_US -> L100KM_TO_MPG / l100km
+            ConsumptionUnit.MPG_UK -> L100KM_TO_MPG_UK / l100km
+            else -> l100km
+        }
+
+    fun consumptionLabel(unit: DistanceUnit, pref: ConsumptionUnit = ConsumptionUnit.AUTO): String =
+        resolve(unit, pref).label
 
     fun pricePerUnit(pricePerLiter: Float, unit: DistanceUnit): Float =
         if (unit == DistanceUnit.MILES) pricePerLiter * LITERS_PER_GALLON else pricePerLiter
@@ -47,8 +61,8 @@ object Units {
     fun formatFuel(liters: Float, unit: DistanceUnit): String =
         String.format(Locale.getDefault(), "%.1f %s", fuel(liters, unit), fuelLabel(unit))
 
-    fun formatConsumption(l100km: Float, unit: DistanceUnit): String =
-        String.format(Locale.getDefault(), "%.1f %s", consumption(l100km, unit), consumptionLabel(unit))
+    fun formatConsumption(l100km: Float, unit: DistanceUnit, pref: ConsumptionUnit = ConsumptionUnit.AUTO): String =
+        String.format(Locale.getDefault(), "%.1f %s", consumption(l100km, unit, pref), consumptionLabel(unit, pref))
 
     fun formatPricePerUnit(pricePerLiter: Float, unit: DistanceUnit, money: MoneyFormat): String =
         "${money.formatPrecise(pricePerUnit(pricePerLiter, unit))}/${priceUnitLabel(unit)}"
@@ -77,3 +91,13 @@ object Units {
     fun formatSpeed(kmh: Float, unit: DistanceUnit): String =
         String.format(Locale.getDefault(), "%.0f %s", speed(kmh, unit), speedLabel(unit))
 }
+
+enum class ConsumptionUnit(val label: String, val title: String) {
+    AUTO("", "Automatic (L/100km, or mpg for miles)"),
+    L_PER_100KM("L/100km", "Liters per 100 km"),
+    KM_PER_L("km/L", "Kilometers per liter"),
+    MPG_US("mpg", "Miles per gallon (US)"),
+    MPG_UK("mpg UK", "Miles per gallon (UK)")
+}
+
+val LocalConsumptionUnit = staticCompositionLocalOf { ConsumptionUnit.AUTO }

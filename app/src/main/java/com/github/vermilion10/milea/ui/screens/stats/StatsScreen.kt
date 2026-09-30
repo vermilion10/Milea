@@ -27,6 +27,7 @@ import com.github.vermilion10.milea.domain.VehicleAnalytics
 import com.github.vermilion10.milea.domain.VehicleDataSource
 import com.github.vermilion10.milea.ui.components.*
 import com.github.vermilion10.milea.util.LocalMoney
+import com.github.vermilion10.milea.util.LocalConsumptionUnit
 import com.github.vermilion10.milea.util.Units
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
@@ -133,6 +134,7 @@ private fun TrendsCard(state: StatsUiState) {
     val unit = state.unit
     var trend by rememberSaveable { mutableStateOf(Trend.DISTANCE) }
     val monthLabels = state.months.map { formatMonth(it.monthStart) }
+    val consumptionUnit = LocalConsumptionUnit.current
 
     ElevatedCard(
         modifier = Modifier.fillMaxWidth(),
@@ -190,9 +192,9 @@ private fun TrendsCard(state: StatsUiState) {
                         "Consumption is measured between full-tank fill-ups. Log a few more to see the trend."
                     ) else LineChart(
                         labels = state.intervals.map { formatShortDate(it.endDate) },
-                        values = state.intervals.map { Units.consumption(it.litersPer100Km, unit) },
+                        values = state.intervals.map { Units.consumption(it.litersPer100Km, unit, consumptionUnit) },
                         color = tertiary,
-                        valueFormatter = { String.format(Locale.getDefault(), "%.1f %s", it, Units.consumptionLabel(unit)) },
+                        valueFormatter = { String.format(Locale.getDefault(), "%.1f %s", it, Units.consumptionLabel(unit, consumptionUnit)) },
                         axisFormatter = { String.format(Locale.getDefault(), "%.0f", it) },
                         readoutTitle = { i ->
                             val interval = state.intervals[i]
@@ -244,7 +246,8 @@ private fun FillupSection(state: StatsUiState) {
     val s = state.stats.fillups
     val unit = state.unit
     val money = LocalMoney.current
-    fun cons(v: Float?) = v?.let { Units.formatConsumption(it, unit) } ?: "--"
+    val consumptionUnit = LocalConsumptionUnit.current
+    fun cons(v: Float?) = v?.let { Units.formatConsumption(it, unit, consumptionUnit) } ?: "--"
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         SectionHeader("Fill-ups")
         StatGrid(

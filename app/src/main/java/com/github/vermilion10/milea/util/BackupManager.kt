@@ -208,14 +208,14 @@ class BackupManager @Inject constructor(
                 com.github.vermilion10.milea.data.model.Vehicle(
                     id = o.getLong("id"),
                     name = o.getString("name"),
-                    make = o.optString("make").ifBlank { null },
-                    model = o.optString("model").ifBlank { null },
+                    make = o.optNullableString("make"),
+                    model = o.optNullableString("model"),
                     year = if (o.isNull("year")) null else o.getInt("year"),
                     fuelType = com.github.vermilion10.milea.data.model.FuelType.valueOf(o.getString("fuelType")),
                     tankCapacity = if (o.isNull("tankCapacity")) null else o.getDouble("tankCapacity").toFloat(),
                     odometerOffset = o.getLong("odometerOffset"),
                     odometerUnit = com.github.vermilion10.milea.data.model.DistanceUnit.valueOf(o.getString("odometerUnit")),
-                    photoPath = o.optString("photoPath").ifBlank { null },
+                    photoPath = o.optNullableString("photoPath"),
                     isActive = o.getBoolean("isActive"),
                     createdAt = o.getLong("createdAt"),
                     updatedAt = o.getLong("updatedAt")
@@ -240,7 +240,7 @@ class BackupManager @Inject constructor(
                     averageSpeed = o.getDouble("averageSpeed").toFloat(),
                     maxSpeed = o.getDouble("maxSpeed").toFloat(),
                     category = com.github.vermilion10.milea.data.model.TripCategory.valueOf(o.getString("category")),
-                    note = o.optString("note").ifBlank { null },
+                    note = o.optNullableString("note"),
                     isAutoDetected = o.getBoolean("isAutoDetected"),
                     createdAt = o.getLong("createdAt"),
                     updatedAt = o.getLong("updatedAt")
@@ -276,11 +276,11 @@ class BackupManager @Inject constructor(
                     pricePerUnit = o.getDouble("pricePerUnit").toFloat(),
                     totalCost = o.getDouble("totalCost").toFloat(),
                     isFullTank = o.getBoolean("isFullTank"),
-                    stationName = o.optString("stationName").ifBlank { null },
+                    stationName = o.optNullableString("stationName"),
                     stationLatitude = if (o.isNull("stationLatitude")) null else o.getDouble("stationLatitude"),
                     stationLongitude = if (o.isNull("stationLongitude")) null else o.getDouble("stationLongitude"),
-                    note = o.optString("note").ifBlank { null },
-                    receiptPath = o.optString("receiptPath").ifBlank { null },
+                    note = o.optNullableString("note"),
+                    receiptPath = o.optNullableString("receiptPath"),
                     createdAt = o.getLong("createdAt"),
                     updatedAt = o.getLong("updatedAt")
                 )
@@ -296,9 +296,9 @@ class BackupManager @Inject constructor(
                     date = o.getLong("date"),
                     category = com.github.vermilion10.milea.data.model.ExpenseCategory.valueOf(o.getString("category")),
                     amount = o.getDouble("amount").toFloat(),
-                    description = o.optString("description").ifBlank { null },
+                    description = o.optNullableString("description"),
                     odometer = if (o.isNull("odometer")) null else o.getLong("odometer"),
-                    receiptPath = o.optString("receiptPath").ifBlank { null },
+                    receiptPath = o.optNullableString("receiptPath"),
                     createdAt = o.getLong("createdAt"),
                     updatedAt = o.getLong("updatedAt")
                 )
@@ -312,7 +312,7 @@ class BackupManager @Inject constructor(
                     id = o.getLong("id"),
                     vehicleId = o.getLong("vehicleId"),
                     title = o.getString("title"),
-                    description = o.optString("description").ifBlank { null },
+                    description = o.optNullableString("description"),
                     dueDate = if (o.isNull("dueDate")) null else o.getLong("dueDate"),
                     dueOdometer = if (o.isNull("dueOdometer")) null else o.getLong("dueOdometer"),
                     isRecurring = o.getBoolean("isRecurring"),
@@ -376,3 +376,7 @@ class BackupManager @Inject constructor(
         val reminders: List<com.github.vermilion10.milea.data.model.Reminder>
     )
 }
+
+// optString() turns a JSON null into the text "null"; treat it as missing instead.
+private fun JSONObject.optNullableString(key: String): String? =
+    if (isNull(key)) null else optString(key).ifBlank { null }

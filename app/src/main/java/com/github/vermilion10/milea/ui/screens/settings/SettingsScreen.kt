@@ -33,6 +33,11 @@ import com.github.vermilion10.milea.data.repository.SettingsRepository
 import com.github.vermilion10.milea.data.repository.ThemeMode
 import com.github.vermilion10.milea.ui.components.rememberTripStarter
 import com.github.vermilion10.milea.util.MoneyFormat
+import com.github.vermilion10.milea.util.ConsumptionUnit
+import com.github.vermilion10.milea.util.Units
+import com.github.vermilion10.milea.data.model.DistanceUnit
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.ui.draw.clip
 import com.github.vermilion10.milea.util.TrackingPreflight
 import com.github.vermilion10.milea.data.repository.TripRepository
 import com.github.vermilion10.milea.data.repository.VehicleRepository
@@ -72,6 +77,13 @@ class SettingsViewModel @Inject constructor(
 
     fun setDynamicColor(enabled: Boolean) {
         viewModelScope.launch { settingsRepository.setDynamicColor(enabled) }
+    }
+
+    val consumptionUnit = settingsRepository.consumptionUnit
+        .stateIn(viewModelScope, SharingStarted.Eagerly, ConsumptionUnit.AUTO)
+
+    fun setConsumptionUnit(unit: ConsumptionUnit) {
+        viewModelScope.launch { settingsRepository.setConsumptionUnit(unit) }
     }
 
     fun setCurrency(symbol: String, decimals: Int) {
@@ -210,6 +222,7 @@ fun SettingsScreen(
     val autoDetectEnabled by viewModel.autoDetectEnabled.collectAsState()
     val appearance by viewModel.appearance.collectAsState()
     val currency by viewModel.currency.collectAsState()
+    val consumptionUnit by viewModel.consumptionUnit.collectAsState()
     val showExportDialog by viewModel.showExportDialog.collectAsState()
     val exportMessage by viewModel.exportMessage.collectAsState()
     val isExporting by viewModel.isExporting.collectAsState()
@@ -221,6 +234,7 @@ fun SettingsScreen(
     var showPasswordDialog by remember { mutableStateOf(false) }
     var passwordAction by remember { mutableStateOf("backup") }
     var showCurrencyDialog by remember { mutableStateOf(false) }
+    var showConsumptionDialog by remember { mutableStateOf(false) }
 
     // Turning auto-detect on goes through the same permission and
     // location/battery checks as starting a trip by hand.
@@ -311,6 +325,12 @@ fun SettingsScreen(
                     title = "Currency",
                     subtitle = "${currency.symbol.ifBlank { "No symbol" }} · ${currency.decimals} decimals · e.g. ${MoneyFormat(currency).format(125000f)}",
                     onClick = { showCurrencyDialog = true }
+                )
+                SettingsRow(
+                    icon = Icons.Default.Speed,
+                    title = "Fuel consumption",
+                    subtitle = consumptionUnit.title,
+                    onClick = { showConsumptionDialog = true }
                 )
             }
 
@@ -404,6 +424,48 @@ fun SettingsScreen(
                     }
                     showPasswordDialog = false
                 }
+            )
+        }
+
+        if (showConsumptionDialog) {
+            AlertDialog(
+                onDismissRequest = { showConsumptionDialog = false },
+                title = { Text("Fuel consumption") },
+                text = {
+                    Column {
+                        ConsumptionUnit.entries.forEach { option ->
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(MaterialTheme.shapes.small)
+                                    .selectable(
+                                        selected = option == consumptionUnit,
+                                        role = Role.RadioButton,
+                                        onClick = {
+                                            viewModel.setConsumptionUnit(option)
+                                            showConsumptionDialog = false
+                                        }
+                                    )
+                                    .padding(vertical = 8.dp)
+                            ) {
+                                RadioButton(selected = option == consumptionUnit, onClick = null)
+                                Spacer(Modifier.width(12.dp))
+                                Column {
+                                    Text(option.title, style = MaterialTheme.typography.bodyLarge)
+                                    if (option.label.isNotEmpty()) {
+                                        Text(
+                                            "e.g. ${Units.formatConsumption(4f, DistanceUnit.KILOMETERS, option)}",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                confirmButton = { TextButton(onClick = { showConsumptionDialog = false }) { Text("Close") } }
             )
         }
 
