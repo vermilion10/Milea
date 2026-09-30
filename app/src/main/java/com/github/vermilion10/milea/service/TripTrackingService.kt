@@ -5,8 +5,11 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
+import android.location.LocationManager
 import android.content.SharedPreferences
 import android.location.Location
 import android.os.Binder
@@ -16,6 +19,9 @@ import android.os.Looper
 import androidx.core.app.NotificationCompat
 import com.github.vermilion10.milea.MainActivity
 import com.github.vermilion10.milea.R
+import com.github.vermilion10.milea.data.model.DistanceUnit
+import com.github.vermilion10.milea.data.repository.VehicleRepository
+import com.github.vermilion10.milea.util.Units
 import com.github.vermilion10.milea.data.model.Trip
 import com.github.vermilion10.milea.data.model.TripPoint
 import com.github.vermilion10.milea.data.repository.TripRepository
@@ -23,14 +29,37 @@ import com.google.android.gms.location.*
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import javax.inject.Inject
+
+/** Snapshot of the tracking service, observable app-wide without binding. */
+data class TrackingState(
+    val isTracking: Boolean = false,
+    val isMonitoring: Boolean = false,
+    val isAutoStarted: Boolean = false,
+    val vehicleId: Long? = null,
+    val tripId: Long? = null,
+    val startTime: Long = 0,
+    val distanceMeters: Float = 0f,
+    val durationMs: Long = 0,
+    val speedMps: Float = 0f,
+    val maxSpeedMps: Float = 0f,
+    /** Location services were switched off while recording; no fixes are arriving. */
+    val locationDisabled: Boolean = false,
+    /** Id of the most recently finished trip, so the UI can offer to open or share it. */
+    val lastCompletedTripId: Long? = null
+)
 
 @AndroidEntryPoint
 class TripTrackingService : Service() {
 
     @Inject
     lateinit var tripRepository: TripRepository
+
+    @Inject
+    lateinit var vehicleRepository: VehicleRepository
 
     private val binder = LocalBinder()
     private var currentTripId: Long? = null
@@ -71,6 +100,14 @@ class TripTrackingService : Service() {
     private var lastAutoStopTime: Long = 0
 
     companion object {
+        private val _state = MutableStateFlow(TrackingState())
+        val state: StateFlow<TrackingState> = _state.asStateFlow()
+
+        /** Clears [TrackingState.lastCompletedTripId] once the UI has shown it. */
+        fun consumeCompletedTrip() {
+            _state.update { it.copy(lastCompletedTripId = null) }
+        }
+
         const val CHANNEL_ID = "trip_tracking_channel"
         const val NOTIFICATION_ID = 1001
         const val MONITOR_NOTIFICATION_ID = 1002
@@ -97,6 +134,7 @@ class TripTrackingService : Service() {
         private const val IDLE_STOP_TIMEOUT_MS = 3 * 60 * 1000L // 3 minutes of idle (auto-detected trips only)
         private const val MANUAL_IDLE_SAFETY_TIMEOUT_MS = 45 * 60 * 1000L // manual trips: safety net only
         private const val MONITOR_INTERVAL_MS = 10_000L         // 10s sampling while monitoring
+        private const val NOTIFICATION_REFRESH_MS = 5_000L
     }
 
     inner class LocalBinder : Binder() {
@@ -105,12 +143,50 @@ class TripTrackingService : Service() {
 
     override fun onBind(intent: Intent?): IBinder = binder
 
+    private fun publish() {
+        _state.update {
+            it.copy(
+                isTracking = isTracking,
+                isMonitoring = isMonitoring,
+                isAutoStarted = isAutoStarted,
+                vehicleId = vehicleId,
+                tripId = currentTripId,
+                startTime = tripStartTime,
+                distanceMeters = _distance.value,
+                durationMs = _duration.value,
+                speedMps = _currentSpeed.value,
+                maxSpeedMps = _maxSpeed.value,
+                locationDisabled = isTracking && !isLocationEnabled()
+            )
+        }
+    }
+
+    private fun isLocationEnabled(): Boolean {
+        val manager = getSystemService(LocationManager::class.java) ?: return true
+        return manager.isLocationEnabled
+    }
+
+    // Location being switched off mid-trip silently stops all fixes. Surface it
+    // in the notification and the in-app trip card instead of recording nothing.
+    private val providerReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (!isTracking) return
+            publish()
+            refreshNotification()
+        }
+    }
+
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
         fusedLocationClient = LocationServices.getFusedLocationProviderClient(this)
         prefs = getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
         setupLocationCallback()
+        registerReceiver(
+            providerReceiver,
+            IntentFilter(LocationManager.PROVIDERS_CHANGED_ACTION),
+            RECEIVER_NOT_EXPORTED
+        )
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -162,8 +238,10 @@ class TripTrackingService : Service() {
                 isTracking = true
                 lastMovingTime = System.currentTimeMillis()
                 startLocationUpdates(highAccuracy = true)
+                loadNotificationUnit(vid)
                 startForeground(NOTIFICATION_ID, createNotification())
                 startDurationLoop()
+                publish()
             }
         } else if (prefs.getBoolean(PREF_IS_MONITORING, false)) {
             val vid = prefs.getLong(PREF_VEHICLE_ID, -1)
@@ -235,6 +313,7 @@ class TripTrackingService : Service() {
         lastMovingTime = now
 
         lastLocation = location
+        publish()
 
         currentTripId?.let { tripId ->
             val tripPoint = TripPoint(
@@ -285,11 +364,17 @@ class TripTrackingService : Service() {
             )
             currentTripId = tripId
             persistState()
+            publish()
         }
 
+        lastLocation = null
+        _currentSpeed.value = 0f
+        _duration.value = 0
+        loadNotificationUnit(vehicleId)
         startLocationUpdates(highAccuracy = true)
         startForeground(NOTIFICATION_ID, createNotification())
         startDurationLoop()
+        publish()
     }
 
     fun stopTracking(resumeMonitoring: Boolean = false): Long? {
@@ -333,6 +418,8 @@ class TripTrackingService : Service() {
             }
 
             currentTripId = null
+            _state.update { it.copy(lastCompletedTripId = tripId) }
+            publish()
 
             if (resumeMonitoring && vehicleId != null) {
                 // stay running and go back to monitoring
@@ -343,6 +430,7 @@ class TripTrackingService : Service() {
                 persistState()
                 startLocationUpdates(highAccuracy = false)
                 startForeground(MONITOR_NOTIFICATION_ID, createMonitoringNotification())
+                publish()
             } else {
                 clearPersistedState()
                 stopForeground(STOP_FOREGROUND_REMOVE)
@@ -363,6 +451,7 @@ class TripTrackingService : Service() {
         persistState()
         startLocationUpdates(highAccuracy = false)
         startForeground(MONITOR_NOTIFICATION_ID, createMonitoringNotification())
+        publish()
     }
 
     fun stopMonitoring() {
@@ -372,12 +461,20 @@ class TripTrackingService : Service() {
         stopLocationUpdates()
         stopForeground(STOP_FOREGROUND_REMOVE)
         clearPersistedState()
+        publish()
     }
 
     private fun startDurationLoop() {
         serviceScope.launch {
+            var lastNotificationRefresh = 0L
             while (isTracking) {
                 _duration.value = System.currentTimeMillis() - tripStartTime
+                publish()
+                val now = System.currentTimeMillis()
+                if (now - lastNotificationRefresh >= NOTIFICATION_REFRESH_MS) {
+                    lastNotificationRefresh = now
+                    refreshNotification()
+                }
 
                 // Idle auto-stop only ends a trip that was started automatically by
                 // the movement monitor -- that flow needs to hand back off to
@@ -475,13 +572,44 @@ class TripTrackingService : Service() {
             PendingIntent.FLAG_IMMUTABLE
         )
 
+        val stopIntent = PendingIntent.getService(
+            this, 2,
+            Intent(this, TripTrackingService::class.java).setAction(ACTION_STOP_TRACKING),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+        val minutes = _duration.value / 60_000
+        val durationText = if (minutes >= 60) "${minutes / 60}h ${minutes % 60}m" else "${minutes}m"
+        val content = if (!isLocationEnabled()) {
+            "Location is off. Turn it on to keep recording."
+        } else {
+            "${Units.formatDistance(_distance.value / 1000f, notificationUnit)} \u00B7 $durationText"
+        }
+
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("Recording Trip")
-            .setContentText("Distance: ${String.format("%.2f", _distance.value / 1000)} km")
+            .setContentTitle(if (isAutoStarted) "Recording trip (auto)" else "Recording trip")
+            .setContentText(content)
             .setSmallIcon(R.drawable.ic_launcher_foreground)
             .setContentIntent(pendingIntent)
             .setOngoing(true)
+            .setOnlyAlertOnce(true)
+            .setCategory(NotificationCompat.CATEGORY_NAVIGATION)
+            .addAction(0, "Stop", stopIntent)
             .build()
+    }
+
+    // Unit for the live notification text, taken from the vehicle being recorded.
+    private var notificationUnit = DistanceUnit.KILOMETERS
+
+    private fun loadNotificationUnit(vehicleId: Long) {
+        serviceScope.launch {
+            vehicleRepository.getVehicleById(vehicleId)?.let { notificationUnit = it.odometerUnit }
+        }
+    }
+
+    private fun refreshNotification() {
+        if (!isTracking) return
+        getSystemService(NotificationManager::class.java)
+            ?.notify(NOTIFICATION_ID, createNotification())
     }
 
     private fun createMonitoringNotification(): Notification {
@@ -501,6 +629,10 @@ class TripTrackingService : Service() {
     }
 
     override fun onDestroy() {
+        runCatching { unregisterReceiver(providerReceiver) }
+        isTracking = false
+        isMonitoring = false
+        publish()
         super.onDestroy()
         serviceScope.cancel()
     }

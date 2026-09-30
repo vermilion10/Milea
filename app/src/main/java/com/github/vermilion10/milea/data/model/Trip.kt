@@ -38,6 +38,13 @@ data class Trip(
     val updatedAt: Long = System.currentTimeMillis()
 )
 
+/**
+ * Average speed in m/s, derived from distance and duration. Older manual
+ * entries stored [Trip.averageSpeed] in the wrong unit, so display code uses this.
+ */
+val Trip.averageSpeedMps: Float
+    get() = if (duration > 0) distance * 1000f / (duration / 1000f) else averageSpeed
+
 enum class TripCategory {
     COMMUTE, BUSINESS, LEISURE, OTHER
 }

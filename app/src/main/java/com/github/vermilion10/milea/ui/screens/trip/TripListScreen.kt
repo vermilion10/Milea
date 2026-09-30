@@ -1,16 +1,13 @@
 package com.github.vermilion10.milea.ui.screens.trip
 
-import android.content.Context
-import android.content.Intent
-import android.content.pm.PackageManager
-import android.os.Build
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -18,99 +15,73 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.unit.dp
-import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.ViewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
+import com.github.vermilion10.milea.data.model.DistanceUnit
 import com.github.vermilion10.milea.data.model.Trip
+import com.github.vermilion10.milea.data.model.averageSpeedMps
 import com.github.vermilion10.milea.data.model.TripCategory
-import com.github.vermilion10.milea.data.repository.FillupRepository
 import com.github.vermilion10.milea.data.repository.TripRepository
-import com.github.vermilion10.milea.data.repository.VehicleRepository
+import com.github.vermilion10.milea.domain.VehicleData
+import com.github.vermilion10.milea.domain.VehicleDataSource
+import com.github.vermilion10.milea.service.TripControl
 import com.github.vermilion10.milea.service.TripTrackingService
-import com.github.vermilion10.milea.ui.components.NoActiveVehicleMessage
+import com.github.vermilion10.milea.ui.components.*
+import com.github.vermilion10.milea.util.TrackingPreflight
+import com.github.vermilion10.milea.util.Units
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
-import java.text.SimpleDateFormat
-import java.util.*
 import javax.inject.Inject
+
+data class TripListState(
+    val data: VehicleData? = null,
+    val trips: List<Trip> = emptyList(),
+    val filter: TripCategory? = null,
+    val loaded: Boolean = false
+)
 
 @HiltViewModel
 class TripListViewModel @Inject constructor(
     private val tripRepository: TripRepository,
-    private val vehicleRepository: VehicleRepository,
-    private val fillupRepository: FillupRepository
+    vehicleDataSource: VehicleDataSource
 ) : ViewModel() {
-    val activeVehicle = vehicleRepository.getSelectedVehicle()
-        .stateIn(viewModelScope, SharingStarted.Lazily, null)
+    private val filter = MutableStateFlow<TripCategory?>(null)
 
-    private val _selectedVehicleId = MutableStateFlow<Long?>(null)
-    val selectedVehicleId = _selectedVehicleId.asStateFlow()
+    val state = combine(vehicleDataSource.selectedVehicleData(), filter) { data, category ->
+        TripListState(
+            data = data,
+            // The in-progress trip lives in the live card, not the list.
+            trips = data?.trips.orEmpty()
+                .filter { it.endTime != null }
+                .filter { category == null || it.category == category },
+            filter = category,
+            loaded = true
+        )
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), TripListState())
 
-    private val _categoryFilter = MutableStateFlow<TripCategory?>(null)
-    val categoryFilter = _categoryFilter.asStateFlow()
+    val tracking = TripTrackingService.state
 
-    val trips = selectedVehicleId
-        .filterNotNull()
-        .flatMapLatest { vehicleId ->
-            categoryFilter.flatMapLatest { category ->
-                if (category == null) {
-                    tripRepository.getTripsByVehicle(vehicleId)
-                } else {
-                    tripRepository.getTripsByVehicleAndCategory(vehicleId, category)
-                }
-            }
-        }
-        .stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
-
-    private val _isTracking = MutableStateFlow(false)
-    val isTracking = _isTracking.asStateFlow()
-
-    fun setActiveVehicle(vehicleId: Long) {
-        _selectedVehicleId.value = vehicleId
+    fun setFilter(category: TripCategory?) {
+        filter.value = category
     }
 
-    fun setCategoryFilter(category: TripCategory?) {
-        _categoryFilter.value = category
-    }
-
-    fun setIsTracking(tracking: Boolean) {
-        _isTracking.value = tracking
-    }
-
-    // Best known odometer reading to carry forward as the new trip's start:
-    // prefer the most recent fill-up (most reliable, hand-entered at the pump),
-    // fall back to the previous trip's highest recorded reading, then the
-    // vehicle's configured offset. 0 is a legitimate value (a brand new
-    // vehicle genuinely starts at/near 0) -- it's kept, not treated as unknown.
-    suspend fun estimateStartOdometer(vehicleId: Long): Long? {
-        val latestFillupOdometer = fillupRepository.getLatestFillup(vehicleId)?.odometer
-        val maxTripOdometer = tripRepository.getMaxOdometerSync(vehicleId)
-        val vehicleOffset = vehicleRepository.getVehicleById(vehicleId)?.odometerOffset
-        return listOfNotNull(latestFillupOdometer, maxTripOdometer, vehicleOffset)
-            .maxOrNull()
-    }
-
-    fun addTrip(trip: Trip) {
+    fun save(trip: Trip) {
         viewModelScope.launch {
-            tripRepository.insertTrip(trip)
+            if (trip.id == 0L) tripRepository.insertTrip(trip)
+            else tripRepository.updateTrip(trip.copy(updatedAt = System.currentTimeMillis()))
         }
     }
 
-    fun updateTrip(trip: Trip) {
-        viewModelScope.launch {
-            tripRepository.updateTrip(trip.copy(updatedAt = System.currentTimeMillis()))
-        }
-    }
-
-    fun deleteTrip(trip: Trip) {
-        viewModelScope.launch {
-            tripRepository.deleteTrip(trip)
-        }
+    fun delete(trip: Trip) {
+        viewModelScope.launch { tripRepository.deleteTrip(trip) }
     }
 }
 
@@ -118,727 +89,374 @@ class TripListViewModel @Inject constructor(
 @Composable
 fun TripListScreen(
     onTripClick: (Long) -> Unit = {},
+    onAddVehicle: () -> Unit = {},
     viewModel: TripListViewModel = hiltViewModel()
 ) {
-    val activeVehicle by viewModel.activeVehicle.collectAsState()
-    val trips by viewModel.trips.collectAsState()
-    val isTracking by viewModel.isTracking.collectAsState()
-    val categoryFilter by viewModel.categoryFilter.collectAsState()
+    val state by viewModel.state.collectAsStateWithLifecycle()
+    val tracking by viewModel.tracking.collectAsStateWithLifecycle()
     val context = LocalContext.current
+    val data = state.data
+    val unit = data?.vehicle?.odometerUnit ?: DistanceUnit.KILOMETERS
 
-    var showEntryDialog by remember { mutableStateOf(false) }
-    var tripToEdit by remember { mutableStateOf<Trip?>(null) }
-    var suggestedEntryOdometer by remember { mutableStateOf<Long?>(null) }
+    var sheetOpen by remember { mutableStateOf(false) }
+    var sheetTarget by remember { mutableStateOf<Trip?>(null) }
+    var confirmDelete by remember { mutableStateOf<Trip?>(null) }
+    val snackbar = remember { SnackbarHostState() }
+    val listState = rememberLazyListState()
+    val scrollBehavior = TopAppBarDefaults.pinnedScrollBehavior()
 
-    val coroutineScope = rememberCoroutineScope()
-
-    val permissionLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestMultiplePermissions()
-    ) { permissions ->
-        if (permissions[android.Manifest.permission.ACCESS_FINE_LOCATION] == true) {
-            activeVehicle?.let { vehicle ->
-                coroutineScope.launch {
-                    val startOdometer = viewModel.estimateStartOdometer(vehicle.id)
-                    startTracking(context, vehicle.id, startOdometer)
-                    viewModel.setIsTracking(true)
-                }
-            }
-        }
+    val startTrip = rememberTripStarter {
+        data?.let { TripControl.start(context, it.vehicle.id, it.currentOdometerKm) }
     }
 
-    LaunchedEffect(activeVehicle) {
-        activeVehicle?.let { viewModel.setActiveVehicle(it.id) }
-    }
-
-    // Bind to the running tracking service (if any) so this screen can show
-    // live distance/duration/speed while a trip is in progress, instead of
-    // only ever showing data once the trip has ended and been saved.
-    var trackingService by remember { mutableStateOf<TripTrackingService?>(null) }
-    val serviceConnection = remember {
-        object : android.content.ServiceConnection {
-            override fun onServiceConnected(
-                name: android.content.ComponentName?,
-                binder: android.os.IBinder?
-            ) {
-                trackingService = (binder as? TripTrackingService.LocalBinder)?.getService()
-            }
-            override fun onServiceDisconnected(name: android.content.ComponentName?) {
-                trackingService = null
-            }
-        }
-    }
-
-    DisposableEffect(isTracking) {
-        if (isTracking) {
-            val bindIntent = Intent(context, TripTrackingService::class.java)
-            context.bindService(bindIntent, serviceConnection, Context.BIND_AUTO_CREATE)
-        }
-        onDispose {
-            if (trackingService != null) {
-                runCatching { context.unbindService(serviceConnection) }
-                trackingService = null
-            }
-        }
-    }
-
-    var liveDistanceMeters by remember { mutableStateOf(0f) }
-    var liveDurationMs by remember { mutableStateOf(0L) }
-    var liveSpeedMps by remember { mutableStateOf(0f) }
-    var liveMaxSpeedMps by remember { mutableStateOf(0f) }
-
-    LaunchedEffect(trackingService) {
-        trackingService?.let { service ->
-            launch { service.distance.collect { liveDistanceMeters = it } }
-            launch { service.duration.collect { liveDurationMs = it } }
-            launch { service.currentSpeed.collect { liveSpeedMps = it } }
-            launch { service.maxSpeed.collect { liveMaxSpeedMps = it } }
-        }
+    // Offer to open the trip that just finished (and from there, share it).
+    LaunchedEffect(tracking.lastCompletedTripId) {
+        val tripId = tracking.lastCompletedTripId ?: return@LaunchedEffect
+        TripTrackingService.consumeCompletedTrip()
+        val result = snackbar.showSnackbar("Trip saved", actionLabel = "View", duration = SnackbarDuration.Long)
+        if (result == SnackbarResult.ActionPerformed) onTripClick(tripId)
     }
 
     Scaffold(
+        modifier = Modifier.nestedScroll(scrollBehavior.nestedScrollConnection),
         topBar = {
             TopAppBar(
                 title = { Text("Trips") },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.surface,
-                    titleContentColor = MaterialTheme.colorScheme.onSurface
-                ),
+                scrollBehavior = scrollBehavior,
                 actions = {
-                    IconButton(onClick = {
-                        activeVehicle?.let { vehicle ->
-                            coroutineScope.launch {
-                                suggestedEntryOdometer = viewModel.estimateStartOdometer(vehicle.id)
-                                showEntryDialog = true
-                            }
-                        } ?: run { showEntryDialog = true }
-                    }) {
-                        Icon(
-                            Icons.Default.EditNote,
-                            contentDescription = "Add Trip Manually"
-                        )
+                    if (data != null) {
+                        IconButton(onClick = { sheetTarget = null; sheetOpen = true }) {
+                            Icon(Icons.Default.EditNote, contentDescription = "Add trip manually")
+                        }
                     }
                 }
             )
         },
+        snackbarHost = { SnackbarHost(snackbar) },
         floatingActionButton = {
-            if (!isTracking && activeVehicle != null) {
+            if (data != null && !tracking.isTracking) {
                 ExtendedFloatingActionButton(
-                    onClick = {
-                        activeVehicle?.let { vehicle ->
-                            if (hasTrackingPermissions(context)) {
-                                coroutineScope.launch {
-                                    val startOdometer = viewModel.estimateStartOdometer(vehicle.id)
-                                    startTracking(context, vehicle.id, startOdometer)
-                                    viewModel.setIsTracking(true)
-                                }
-                            } else {
-                                permissionLauncher.launch(
-                                    arrayOf(
-                                        android.Manifest.permission.ACCESS_FINE_LOCATION,
-                                        android.Manifest.permission.ACCESS_COARSE_LOCATION,
-                                        android.Manifest.permission.POST_NOTIFICATIONS
-                                    )
-                                )
-                            }
-                        }
-                    },
-                    icon = { Icon(Icons.Default.PlayArrow, "Start Trip") },
-                    text = { Text("Start Trip") }
-                )
-            } else if (isTracking) {
-                ExtendedFloatingActionButton(
-                    onClick = {
-                        val intent = Intent(context, TripTrackingService::class.java).apply {
-                            action = TripTrackingService.ACTION_STOP_TRACKING
-                        }
-                        ContextCompat.startForegroundService(context, intent)
-                        viewModel.setIsTracking(false)
-                    },
-                    icon = { Icon(Icons.Default.Stop, "Stop Trip") },
-                    text = { Text("Stop Trip") },
-                    containerColor = MaterialTheme.colorScheme.error
+                    onClick = startTrip,
+                    expanded = listState.firstVisibleItemIndex == 0,
+                    icon = { Icon(Icons.Default.PlayArrow, contentDescription = null) },
+                    text = { Text("Start trip") }
                 )
             }
         }
     ) { padding ->
-        Column(modifier = Modifier.padding(padding)) {
-            if (activeVehicle == null) {
-                NoActiveVehicleMessage(
-                    padding = PaddingValues(16.dp),
-                    message = "Add a vehicle first to track trips."
-                )
-            } else {
-                TripCategoryFilter(
-                    selected = categoryFilter,
-                    onSelect = { viewModel.setCategoryFilter(it) }
-                )
-
-                if (isTracking && trackingService != null) {
+        if (!state.loaded) return@Scaffold
+        if (data == null) {
+            NoActiveVehicleMessage(padding, "Add a vehicle first to track trips.", onAddVehicle)
+            return@Scaffold
+        }
+        LazyColumn(
+            state = listState,
+            modifier = Modifier.padding(padding),
+            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 96.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            if (tracking.isTracking) {
+                item(key = "live") {
                     LiveTripCard(
-                        distanceMeters = liveDistanceMeters,
-                        durationMs = liveDurationMs,
-                        speedMps = liveSpeedMps,
-                        maxSpeedMps = liveMaxSpeedMps,
-                        unit = activeVehicle?.odometerUnit
-                            ?: com.github.vermilion10.milea.data.model.DistanceUnit.KILOMETERS,
-                        modifier = Modifier.padding(horizontal = 16.dp)
+                        state = tracking,
+                        unit = unit,
+                        onStop = { TripControl.stop(context) },
+                        onTurnOnLocation = { context.startActivity(TrackingPreflight.locationSettingsIntent()) },
+                        modifier = Modifier.padding(bottom = 8.dp)
                     )
                 }
+            }
+            item(key = "filter") {
+                Row(
+                    modifier = Modifier.horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    FilterChip(
+                        selected = state.filter == null,
+                        onClick = { viewModel.setFilter(null) },
+                        label = { Text("All") }
+                    )
+                    TripCategory.entries.forEach { c ->
+                        FilterChip(
+                            selected = state.filter == c,
+                            onClick = { viewModel.setFilter(if (state.filter == c) null else c) },
+                            label = { Text(c.label()) },
+                            leadingIcon = { Icon(c.icon(), contentDescription = null, Modifier.size(18.dp)) }
+                        )
+                    }
+                }
+            }
+            if (state.trips.isEmpty()) {
+                item(key = "empty") {
+                    EmptyState(
+                        icon = Icons.Default.Route,
+                        title = if (state.filter == null) "No trips yet" else "No ${state.filter!!.label().lowercase()} trips",
+                        message = "Tap Start trip when you set off. Milea records the route, distance and time with GPS.",
+                        modifier = Modifier.heightIn(min = 360.dp)
+                    )
+                }
+            }
+            items(state.trips, key = { it.id }) { trip ->
+                TripItem(
+                    trip = trip,
+                    unit = unit,
+                    onClick = { onTripClick(trip.id) },
+                    onEdit = { sheetTarget = trip; sheetOpen = true }
+                )
+            }
+        }
+    }
 
-                if (trips.isEmpty()) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .padding(16.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Icon(
-                                Icons.Default.Route,
-                                contentDescription = null,
-                                modifier = Modifier.size(64.dp),
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                            Spacer(modifier = Modifier.height(16.dp))
-                            Text(
-                                "No trips recorded yet",
-                                style = MaterialTheme.typography.bodyLarge
-                            )
-                            Spacer(modifier = Modifier.height(8.dp))
-                            Text(
-                                "Start tracking or add a trip manually",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
+    if (sheetOpen && data != null) {
+        TripSheet(
+            vehicleId = data.vehicle.id,
+            existing = sheetTarget,
+            unit = unit,
+            suggestedOdometerKm = data.currentOdometerKm,
+            onDismiss = { sheetOpen = false },
+            onSave = { viewModel.save(it); sheetOpen = false },
+            onDelete = { confirmDelete = it; sheetOpen = false }
+        )
+    }
+
+    confirmDelete?.let { trip ->
+        AlertDialog(
+            onDismissRequest = { confirmDelete = null },
+            icon = { Icon(Icons.Default.Delete, contentDescription = null) },
+            title = { Text("Delete trip?") },
+            text = { Text("The trip and its recorded route will be removed. This can't be undone.") },
+            confirmButton = {
+                TextButton(onClick = { viewModel.delete(trip); confirmDelete = null }) { Text("Delete") }
+            },
+            dismissButton = { TextButton(onClick = { confirmDelete = null }) { Text("Cancel") } }
+        )
+    }
+}
+
+fun TripCategory.icon(): ImageVector = when (this) {
+    TripCategory.COMMUTE -> Icons.Default.Work
+    TripCategory.BUSINESS -> Icons.Default.BusinessCenter
+    TripCategory.LEISURE -> Icons.Default.Landscape
+    TripCategory.OTHER -> Icons.Default.Route
+}
+
+@Composable
+fun TripItem(
+    trip: Trip,
+    unit: DistanceUnit,
+    onClick: () -> Unit,
+    onEdit: (() -> Unit)? = null
+) {
+    ElevatedCard(
+        onClick = onClick,
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.elevatedCardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+        elevation = CardDefaults.elevatedCardElevation(defaultElevation = 0.dp)
+    ) {
+        Row(
+            modifier = Modifier.padding(start = 16.dp, top = 16.dp, bottom = 16.dp, end = 4.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Surface(
+                shape = CircleShape,
+                color = MaterialTheme.colorScheme.secondaryContainer,
+                modifier = Modifier.size(44.dp)
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(
+                        trip.category.icon(),
+                        contentDescription = trip.category.label(),
+                        tint = MaterialTheme.colorScheme.onSecondaryContainer
+                    )
+                }
+            }
+            Spacer(Modifier.width(16.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    Units.formatDistance(trip.distance, unit),
+                    style = MaterialTheme.typography.titleLarge
+                )
+                Text(
+                    buildString {
+                        append(formatRelativeDay(trip.startTime))
+                        append(", ")
+                        append(formatTime(trip.startTime))
+                        append(" · ")
+                        append(formatDuration(trip.duration))
+                        if (trip.averageSpeedMps > 0f) {
+                            append(" · ")
+                            append(Units.formatSpeed(trip.averageSpeedMps * 3.6f, unit))
                         }
-                    }
-                } else {
-                    LazyColumn(
-                        modifier = Modifier.fillMaxSize(),
-                        contentPadding = PaddingValues(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        items(trips) { trip ->
-                            TripCard(
-                                trip = trip,
-                                unit = activeVehicle?.odometerUnit
-                                    ?: com.github.vermilion10.milea.data.model.DistanceUnit.KILOMETERS,
-                                onClick = { onTripClick(trip.id) },
-                                onEdit = { tripToEdit = trip }
-                            )
-                        }
-                    }
+                    },
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                if (trip.isAutoDetected || trip.note != null) {
+                    Text(
+                        listOfNotNull(if (trip.isAutoDetected) "Auto-detected" else null, trip.note).joinToString(" · "),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+            if (onEdit != null) {
+                IconButton(onClick = onEdit) {
+                    Icon(Icons.Default.Edit, contentDescription = "Edit trip")
                 }
             }
         }
     }
-
-    val activeVehicleForEntry = activeVehicle
-    if (showEntryDialog && activeVehicleForEntry != null) {
-        TripEntryDialog(
-            vehicleId = activeVehicleForEntry.id,
-            unit = activeVehicleForEntry.odometerUnit,
-            suggestedOdometer = suggestedEntryOdometer,
-            onDismiss = { showEntryDialog = false },
-            onSave = { trip ->
-                viewModel.addTrip(trip)
-                showEntryDialog = false
-            }
-        )
-    }
-
-    tripToEdit?.let { trip ->
-        TripEntryDialog(
-            trip = trip,
-            vehicleId = trip.vehicleId,
-            unit = activeVehicle?.odometerUnit
-                ?: com.github.vermilion10.milea.data.model.DistanceUnit.KILOMETERS,
-            onDismiss = { tripToEdit = null },
-            onSave = { updated ->
-                viewModel.updateTrip(updated)
-                tripToEdit = null
-            },
-            onDelete = {
-                viewModel.deleteTrip(trip)
-                tripToEdit = null
-            }
-        )
-    }
 }
 
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
-fun LiveTripCard(
-    distanceMeters: Float,
-    durationMs: Long,
-    speedMps: Float,
-    maxSpeedMps: Float,
-    unit: com.github.vermilion10.milea.data.model.DistanceUnit,
-    modifier: Modifier = Modifier
+fun TripSheet(
+    vehicleId: Long,
+    existing: Trip?,
+    unit: DistanceUnit,
+    suggestedOdometerKm: Long?,
+    onDismiss: () -> Unit,
+    onSave: (Trip) -> Unit,
+    onDelete: (Trip) -> Unit
 ) {
-    Card(
-        modifier = modifier
-            .fillMaxWidth()
-            .padding(bottom = 8.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.primaryContainer
-        ),
-        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
-    ) {
-        Column(modifier = Modifier.padding(16.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(
-                    Icons.Default.FiberManualRecord,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.error,
-                    modifier = Modifier.size(12.dp)
-                )
-                Spacer(modifier = Modifier.width(6.dp))
-                Text(
-                    "Recording trip",
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.Bold
-                )
-            }
-            Spacer(modifier = Modifier.height(12.dp))
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceEvenly
-            ) {
-                StatItem(
-                    icon = Icons.Default.Route,
-                    label = "Distance",
-                    value = com.github.vermilion10.milea.util.Units.formatDistance(distanceMeters / 1000f, unit)
-                )
-                StatItem(
-                    icon = Icons.Default.Schedule,
-                    label = "Duration",
-                    value = formatDuration(durationMs)
-                )
-                StatItem(
-                    icon = Icons.Default.Speed,
-                    label = "Speed",
-                    value = com.github.vermilion10.milea.util.Units.formatSpeed(speedMps * 3.6f, unit)
-                )
-                StatItem(
-                    icon = Icons.Default.Speed,
-                    label = "Max Speed",
-                    value = com.github.vermilion10.milea.util.Units.formatSpeed(maxSpeedMps * 3.6f, unit)
-                )
-            }
-        }
+    // The text first shown for each field. Recorded values are rounded for
+    // display, so a field only counts as edited if its text changed; otherwise
+    // the precise recorded value is kept.
+    val initialDistance = remember { existing?.let { Units.distance(it.distance, unit).toInputString(1) } ?: "" }
+    val initialMinutes = remember { existing?.let { (it.duration / 60_000).toString() } ?: "" }
+    var distance by remember { mutableStateOf(initialDistance) }
+    var minutes by remember { mutableStateOf(initialMinutes) }
+    var category by remember { mutableStateOf(existing?.category ?: TripCategory.COMMUTE) }
+    var note by remember { mutableStateOf(existing?.note ?: "") }
+    val initialOdometer = remember {
+        (existing?.startOdometer ?: if (existing == null) suggestedOdometerKm else null)
+            ?.let { Math.round(Units.distance(it.toFloat(), unit)).toString() } ?: ""
     }
-}
+    var odometer by remember { mutableStateOf(initialOdometer) }
+    var date by remember { mutableLongStateOf(existing?.startTime ?: System.currentTimeMillis()) }
+    var showDatePicker by remember { mutableStateOf(false) }
 
-@Composable
-fun TripCategoryFilter(
-    selected: TripCategory?,
-    onSelect: (TripCategory?) -> Unit
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .horizontalScroll(rememberScrollState())
-            .padding(horizontal = 16.dp, vertical = 8.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp)
-    ) {
-        FilterChip(
-            selected = selected == null,
-            onClick = { onSelect(null) },
-            label = { Text("All") }
-        )
-        TripCategory.entries.forEach { category ->
-            FilterChip(
-                selected = selected == category,
-                onClick = { onSelect(category) },
-                label = { Text(category.name.lowercase().replaceFirstChar { it.titlecase() }) }
-            )
-        }
-    }
-}
+    val distanceValue = distance.toFloatOrNull()?.takeIf { it > 0f }
+    val minutesValue = minutes.toLongOrNull()?.takeIf { it > 0 }
 
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-fun TripCard(
-    trip: Trip,
-    unit: com.github.vermilion10.milea.data.model.DistanceUnit,
-    onClick: () -> Unit,
-    onEdit: () -> Unit
-) {
-    val dateFormat = SimpleDateFormat("MMM dd, yyyy", Locale.getDefault())
-    val timeFormat = SimpleDateFormat("HH:mm", Locale.getDefault())
-
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
-        onClick = onClick
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        contentWindowInsets = { WindowInsets.ime.union(WindowInsets.navigationBars) }
     ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(16.dp)
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 24.dp)
+                .padding(bottom = 24.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Column {
-                    Text(
-                        text = dateFormat.format(Date(trip.startTime)),
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Text(
-                        text = timeFormat.format(Date(trip.startTime)),
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    AssistChip(
-                        onClick = { },
-                        label = {
-                            Text(
-                                trip.category.name.lowercase()
-                                    .replaceFirstChar { it.titlecase() }
-                            )
-                        },
-                        leadingIcon = {
-                            Icon(
-                                when (trip.category) {
-                                    TripCategory.COMMUTE -> Icons.Default.Work
-                                    TripCategory.BUSINESS -> Icons.Default.Business
-                                    TripCategory.LEISURE -> Icons.Default.BeachAccess
-                                    TripCategory.OTHER -> Icons.Default.MoreHoriz
-                                },
-                                contentDescription = null,
-                                modifier = Modifier.size(16.dp)
-                            )
-                        }
-                    )
-                    IconButton(onClick = onEdit) {
-                        Icon(
-                            Icons.Default.Edit,
-                            contentDescription = "Edit Trip",
-                            modifier = Modifier.size(18.dp)
-                        )
-                    }
-                }
-            }
-
-            Spacer(modifier = Modifier.height(12.dp))
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceEvenly
-            ) {
-                StatItem(
-                    icon = Icons.Default.Route,
-                    label = "Distance",
-                    value = com.github.vermilion10.milea.util.Units.formatDistance(trip.distance, unit)
-                )
-                StatItem(
-                    icon = Icons.Default.Schedule,
-                    label = "Duration",
-                    value = formatDuration(trip.duration)
-                )
-                StatItem(
-                    icon = Icons.Default.Speed,
-                    label = "Avg Speed",
-                    value = com.github.vermilion10.milea.util.Units.formatSpeed(trip.averageSpeed * 3.6f, unit)
-                )
-            }
-        }
-    }
-}
-
-@Composable
-fun StatItem(
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
-    label: String,
-    value: String
-) {
-    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        Icon(
-            icon,
-            contentDescription = null,
-            tint = MaterialTheme.colorScheme.primary,
-            modifier = Modifier.size(24.dp)
-        )
-        Spacer(modifier = Modifier.height(4.dp))
-        Text(
-            text = value,
-            style = MaterialTheme.typography.titleSmall,
-            fontWeight = FontWeight.Bold
-        )
-        Text(
-            text = label,
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-    }
-}
-
-fun formatDuration(millis: Long): String {
-    val hours = millis / 3600000
-    val minutes = (millis % 3600000) / 60000
-    return if (hours > 0) {
-        "${hours}h ${minutes}m"
-    } else {
-        "${minutes}m"
-    }
-}
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-fun TripEntryDialog(
-    vehicleId: Long,
-    trip: Trip? = null,
-    unit: com.github.vermilion10.milea.data.model.DistanceUnit = com.github.vermilion10.milea.data.model.DistanceUnit.KILOMETERS,
-    suggestedOdometer: Long? = null,
-    onDismiss: () -> Unit,
-    onSave: (Trip) -> Unit,
-    onDelete: (() -> Unit)? = null
-) {
-    val isEditing = trip != null
-    var distance by remember { mutableStateOf(if (isEditing) trip.distance.toString() else "") }
-    var durationMin by remember {
-        mutableStateOf(if (isEditing) (trip.duration / 60000).toString() else "")
-    }
-    var category by remember { mutableStateOf(trip?.category ?: TripCategory.COMMUTE) }
-    var note by remember { mutableStateOf(trip?.note ?: "") }
-    // Prefers the trip's own recorded reading when editing; otherwise falls
-    // back to the same best-known-odometer estimate used for tracked trips.
-    // Optional -- leave blank if you don't want this trip in the odometer chain.
-    var odometer by remember {
-        mutableStateOf(
-            (trip?.startOdometer ?: suggestedOdometer)?.let {
-                Math.round(com.github.vermilion10.milea.util.Units.distance(it.toFloat(), unit)).toString()
-            } ?: ""
-        )
-    }
-
-    val distanceLabel = com.github.vermilion10.milea.util.Units.distanceLabel(unit)
-
-    val datePickerState = rememberDatePickerState(
-        initialSelectedDateMillis = trip?.startTime ?: System.currentTimeMillis()
-    )
-    var showDatePicker by remember { mutableStateOf(false) }
-    var selectedDate by remember {
-        mutableStateOf(trip?.startTime ?: System.currentTimeMillis())
-    }
-    val dateFormat = SimpleDateFormat("MMM dd, yyyy", Locale.getDefault())
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text(if (isEditing) "Edit Trip" else "Add Trip") },
-        text = {
-            Column(
-                modifier = Modifier.verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                OutlinedTextField(
-                    value = dateFormat.format(Date(selectedDate)),
-                    onValueChange = {},
-                    readOnly = true,
-                    label = { Text("Date") },
-                    trailingIcon = {
-                        IconButton(onClick = { showDatePicker = true }) {
-                            Icon(Icons.Default.DateRange, contentDescription = "Pick Date")
-                        }
-                    },
-                    modifier = Modifier.fillMaxWidth()
-                )
-
-                OutlinedTextField(
-                    value = distance,
-                    onValueChange = { distance = it.filter { c -> c.isDigit() || c == '.' } },
-                    label = { Text("Distance ($distanceLabel) *") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-
-                OutlinedTextField(
-                    value = odometer,
-                    onValueChange = { odometer = it.filter { c -> c.isDigit() } },
-                    label = { Text("Odometer at start ($distanceLabel, optional)") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-
-                OutlinedTextField(
-                    value = durationMin,
-                    onValueChange = { durationMin = it.filter { c -> c.isDigit() } },
-                    label = { Text("Duration (minutes) *") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-
-                var expanded by remember { mutableStateOf(false) }
-                ExposedDropdownMenuBox(
-                    expanded = expanded,
-                    onExpandedChange = { expanded = it }
-                ) {
-                    OutlinedTextField(
-                        value = category.name.lowercase().replaceFirstChar { it.titlecase() },
-                        onValueChange = {},
-                        readOnly = true,
-                        label = { Text("Category") },
-                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
-                        modifier = Modifier.menuAnchor()
-                    )
-                    ExposedDropdownMenu(
-                        expanded = expanded,
-                        onDismissRequest = { expanded = false }
-                    ) {
-                        TripCategory.entries.forEach { cat ->
-                            DropdownMenuItem(
-                                text = { Text(cat.name.lowercase().replaceFirstChar { it.titlecase() }) },
-                                onClick = {
-                                    category = cat
-                                    expanded = false
-                                }
-                            )
-                        }
-                    }
-                }
-
-                OutlinedTextField(
-                    value = note,
-                    onValueChange = { note = it },
-                    label = { Text("Note") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-            }
-        },
-        confirmButton = {
-            TextButton(
-                onClick = {
-                    val durationMillis = (durationMin.toLongOrNull() ?: 0) * 60000
-                    val distanceValue = distance.toFloatOrNull() ?: 0f
-                    val odometerDisplay = odometer.toFloatOrNull()
-                    val startOdometerKm = odometerDisplay?.let {
-                        if (unit == com.github.vermilion10.milea.data.model.DistanceUnit.MILES) {
-                            Math.round(it / 0.621371f).toLong()
-                        } else {
-                            it.toLong()
-                        }
-                    }
-                    // distance is entered/stored in the vehicle's own unit here, but
-                    // Trip.distance is stored in km elsewhere in the app -- convert
-                    // so the odometer chain and other screens stay consistent.
-                    val distanceKm = if (unit == com.github.vermilion10.milea.data.model.DistanceUnit.MILES) {
-                        distanceValue * 1.609344f
-                    } else {
-                        distanceValue
-                    }
-                    val endOdometerKm = startOdometerKm?.let { it + Math.round(distanceKm) }
-                    val base = trip ?: Trip(vehicleId = vehicleId, startTime = selectedDate)
-                    onSave(
-                        base.copy(
-                            vehicleId = if (isEditing) trip.vehicleId else vehicleId,
-                            startTime = selectedDate,
-                            endTime = selectedDate + durationMillis,
-                            startOdometer = startOdometerKm,
-                            endOdometer = endOdometerKm,
-                            distance = distanceKm,
-                            duration = durationMillis,
-                            movingTime = durationMillis,
-                            idleTime = 0,
-                            averageSpeed = if (durationMillis > 0) {
-                                distanceKm / (durationMillis / 1000f)
-                            } else 0f,
-                            category = category,
-                            note = note.ifBlank { null },
-                            isAutoDetected = isEditing && trip.isAutoDetected
-                        )
-                    )
-                },
-                enabled = distance.isNotBlank() && durationMin.isNotBlank()
-            ) {
-                Text(if (isEditing) "Save" else "Add")
-            }
-        },
-        dismissButton = {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                if (onDelete != null) {
-                    TextButton(
-                        onClick = onDelete,
-                        colors = ButtonDefaults.textButtonColors(
-                            contentColor = MaterialTheme.colorScheme.error
-                        )
-                    ) {
-                        Icon(
-                            Icons.Default.Delete,
-                            contentDescription = null,
-                            modifier = Modifier.size(18.dp)
-                        )
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text("Delete")
-                    }
-                }
-                TextButton(onClick = onDismiss) {
-                    Text("Cancel")
+                Text(
+                    if (existing == null) "Add trip" else "Edit trip",
+                    style = MaterialTheme.typography.headlineSmall,
+                    modifier = Modifier.weight(1f)
+                )
+                AssistChip(
+                    onClick = { showDatePicker = true },
+                    label = { Text(formatRelativeDay(date)) },
+                    leadingIcon = { Icon(Icons.Default.CalendarToday, contentDescription = null, Modifier.size(18.dp)) }
+                )
+            }
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                TripCategory.entries.forEach { c ->
+                    FilterChip(
+                        selected = category == c,
+                        onClick = { category = c },
+                        label = { Text(c.label()) },
+                        leadingIcon = { Icon(c.icon(), contentDescription = null, Modifier.size(18.dp)) }
+                    )
                 }
             }
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                NumberField(
+                    value = distance,
+                    onValueChange = { distance = it },
+                    label = "Distance",
+                    decimals = 1,
+                    suffix = Units.distanceLabel(unit),
+                    modifier = Modifier.weight(1f)
+                )
+                NumberField(
+                    value = minutes,
+                    onValueChange = { minutes = it },
+                    label = "Duration",
+                    decimals = 0,
+                    suffix = "min",
+                    modifier = Modifier.weight(1f)
+                )
+            }
+            NumberField(
+                value = odometer,
+                onValueChange = { odometer = it },
+                label = "Odometer at start (optional)",
+                decimals = 0,
+                suffix = Units.distanceLabel(unit),
+                supportingText = "Keeps the odometer continuous across trips and fill-ups",
+                modifier = Modifier.fillMaxWidth()
+            )
+            OutlinedTextField(
+                value = note,
+                onValueChange = { note = it },
+                label = { Text("Note (optional)") },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
+                modifier = Modifier.fillMaxWidth()
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                if (existing != null) {
+                    TextButton(
+                        onClick = { onDelete(existing) },
+                        colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)
+                    ) { Text("Delete") }
+                }
+                Spacer(Modifier.weight(1f))
+                OutlinedButton(onClick = onDismiss) { Text("Cancel") }
+                Button(
+                    enabled = distanceValue != null && minutesValue != null,
+                    onClick = {
+                        val base = existing ?: Trip(vehicleId = vehicleId, startTime = date)
+                        val distanceEdited = existing == null || distance != initialDistance
+                        val durationEdited = existing == null || minutes != initialMinutes
+                        val odometerEdited = existing == null || odometer != initialOdometer
+                        val distanceKm = if (distanceEdited) Units.distanceToKm(distanceValue!!, unit) else base.distance
+                        val durationMs = if (durationEdited) minutesValue!! * 60_000 else base.duration
+                        val startOdo = if (odometerEdited) {
+                            odometer.toFloatOrNull()?.let { Math.round(Units.distanceToKm(it, unit)).toLong() }
+                        } else base.startOdometer
+                        // Editing only the category, note or date must never touch
+                        // what GPS recorded (moving/idle split, speeds, odometers).
+                        val recordedUnchanged = !distanceEdited && !durationEdited
+                        onSave(
+                            base.copy(
+                                startTime = date,
+                                endTime = date + durationMs,
+                                startOdometer = startOdo,
+                                endOdometer = if (!distanceEdited && !odometerEdited) base.endOdometer
+                                else startOdo?.let { it + Math.round(distanceKm) },
+                                distance = distanceKm,
+                                duration = durationMs,
+                                movingTime = if (recordedUnchanged) base.movingTime else durationMs,
+                                idleTime = if (recordedUnchanged) base.idleTime else 0,
+                                averageSpeed = if (recordedUnchanged) base.averageSpeed
+                                else distanceKm * 1000f / (durationMs / 1000f),
+                                category = category,
+                                note = note.trim().ifBlank { null }
+                            )
+                        )
+                    }
+                ) { Text("Save") }
+            }
         }
-    )
+    }
 
     if (showDatePicker) {
-        DatePickerDialog(
-            onDismissRequest = { showDatePicker = false },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        datePickerState.selectedDateMillis?.let {
-                            val cal = Calendar.getInstance().apply {
-                                timeInMillis = it
-                                set(Calendar.HOUR_OF_DAY, 12)
-                                set(Calendar.MINUTE, 0)
-                                set(Calendar.SECOND, 0)
-                                set(Calendar.MILLISECOND, 0)
-                            }
-                            selectedDate = cal.timeInMillis
-                        }
-                        showDatePicker = false
-                    }
-                ) {
-                    Text("OK")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showDatePicker = false }) {
-                    Text("Cancel")
-                }
-            }
-        ) {
-            DatePicker(state = datePickerState)
-        }
+        DateTimeKeepingPicker(initial = date, onDismiss = { showDatePicker = false }, onPicked = { date = it })
     }
-}
-
-private fun hasTrackingPermissions(context: Context): Boolean {
-    val fineLocation = ContextCompat.checkSelfPermission(
-        context, android.Manifest.permission.ACCESS_FINE_LOCATION
-    ) == PackageManager.PERMISSION_GRANTED
-    val notifications = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-        ContextCompat.checkSelfPermission(
-            context, android.Manifest.permission.POST_NOTIFICATIONS
-        ) == PackageManager.PERMISSION_GRANTED
-    } else {
-        true
-    }
-    return fineLocation && notifications
-}
-
-private fun startTracking(context: Context, vehicleId: Long, startOdometer: Long? = null) {
-    val intent = Intent(context, TripTrackingService::class.java).apply {
-        action = TripTrackingService.ACTION_START_TRACKING
-        putExtra(TripTrackingService.EXTRA_VEHICLE_ID, vehicleId)
-        if (startOdometer != null) {
-            putExtra(TripTrackingService.EXTRA_START_ODOMETER, startOdometer)
-        }
-    }
-    ContextCompat.startForegroundService(context, intent)
 }

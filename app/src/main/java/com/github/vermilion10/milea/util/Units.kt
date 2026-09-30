@@ -50,8 +50,29 @@ object Units {
     fun formatConsumption(l100km: Float, unit: DistanceUnit): String =
         String.format(Locale.getDefault(), "%.1f %s", consumption(l100km, unit), consumptionLabel(unit))
 
-    fun formatPricePerUnit(pricePerLiter: Float, unit: DistanceUnit): String =
-        String.format(Locale.getDefault(), "$%.3f/%s", pricePerUnit(pricePerLiter, unit), priceUnitLabel(unit))
+    fun formatPricePerUnit(pricePerLiter: Float, unit: DistanceUnit, money: MoneyFormat): String =
+        "${money.formatPrecise(pricePerUnit(pricePerLiter, unit))}/${priceUnitLabel(unit)}"
+
+    /** Cost per km (as stored) converted to cost per display distance unit. */
+    fun costPerDistance(costPerKm: Float, unit: DistanceUnit): Float =
+        if (unit == DistanceUnit.MILES) costPerKm * KM_PER_MILE else costPerKm
+
+    // Inverse conversions: values typed by the user in their display unit,
+    // converted to the km / liter / price-per-liter values the database stores.
+    fun distanceToKm(value: Float, unit: DistanceUnit): Float =
+        if (unit == DistanceUnit.MILES) value * KM_PER_MILE else value
+
+    fun fuelToLiters(value: Float, unit: DistanceUnit): Float =
+        if (unit == DistanceUnit.MILES) value * LITERS_PER_GALLON else value
+
+    fun priceToPerLiter(value: Float, unit: DistanceUnit): Float =
+        if (unit == DistanceUnit.MILES) value / LITERS_PER_GALLON else value
+
+    fun formatWholeDistance(km: Float, unit: DistanceUnit): String =
+        String.format(Locale.getDefault(), "%,.0f %s", distance(km, unit), distanceLabel(unit))
+
+    fun formatOdometer(km: Long, unit: DistanceUnit): String =
+        String.format(Locale.getDefault(), "%,d %s", Math.round(distance(km.toFloat(), unit)), distanceLabel(unit))
 
     fun formatSpeed(kmh: Float, unit: DistanceUnit): String =
         String.format(Locale.getDefault(), "%.0f %s", speed(kmh, unit), speedLabel(unit))

@@ -46,22 +46,4 @@ class FillupRepository @Inject constructor(
     suspend fun updateFillup(fillup: Fillup) = fillupDao.updateFillup(fillup)
 
     suspend fun deleteFillup(fillup: Fillup) = fillupDao.deleteFillup(fillup)
-
-    // Uses the most recent pair of consecutive FULL-TANK fillups, skipping over
-    // any partial fills in between. Using getLastTwoFillups() (last two by
-    // odometer, regardless of full/partial) previously caused this to return
-    // null whenever the second-most-recent fillup was a partial fill, even
-    // though a valid full-to-full pair existed further back.
-    suspend fun calculateConsumption(vehicleId: Long): Float? {
-        val fullTanks = fillupDao.getFullTankFillupsByVehicleSync(vehicleId)
-        if (fullTanks.size < 2) return null
-
-        val recent = fullTanks[fullTanks.size - 1]
-        val previous = fullTanks[fullTanks.size - 2]
-
-        val distance = recent.odometer - previous.odometer
-        if (distance <= 0) return null
-
-        return (recent.liters / distance) * 100
-    }
 }

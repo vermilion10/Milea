@@ -1,391 +1,210 @@
 package com.github.vermilion10.milea.ui.screens.stats
 
-import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.*
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
-import androidx.compose.ui.Alignment
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.material.icons.automirrored.filled.TrendingDown
+import androidx.compose.material.icons.automirrored.filled.TrendingUp
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.geometry.CornerRadius
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.ViewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
 import com.github.vermilion10.milea.data.model.DistanceUnit
-import com.github.vermilion10.milea.data.model.Fillup
-import com.github.vermilion10.milea.data.repository.ExpenseRepository
-import com.github.vermilion10.milea.data.repository.FillupRepository
-import com.github.vermilion10.milea.data.repository.TripRepository
-import com.github.vermilion10.milea.data.repository.VehicleRepository
+import com.github.vermilion10.milea.domain.ConsumptionInterval
+import com.github.vermilion10.milea.domain.MonthBucket
+import com.github.vermilion10.milea.domain.PeriodStats
+import com.github.vermilion10.milea.domain.StatsPeriod
+import com.github.vermilion10.milea.domain.VehicleAnalytics
+import com.github.vermilion10.milea.domain.VehicleDataSource
+import com.github.vermilion10.milea.ui.components.*
+import com.github.vermilion10.milea.util.LocalMoney
 import com.github.vermilion10.milea.util.Units
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.*
-import java.text.SimpleDateFormat
-import java.util.*
+import java.util.Locale
 import javax.inject.Inject
 
-data class ConsumptionPoint(val date: Long, val value: Float)
-data class MonthlySpend(val label: String, val value: Float)
-
 data class StatsUiState(
-    val vehicleName: String? = null,
+    val hasVehicle: Boolean = false,
+    val loaded: Boolean = false,
     val unit: DistanceUnit = DistanceUnit.KILOMETERS,
-    val totalDistance: Float = 0f,
-    val totalFuelCost: Float = 0f,
-    val totalLiters: Float = 0f,
-    val tripCount: Int = 0,
-    val avgConsumption: Float? = null,
-    val costPerKm: Float? = null,
-    val totalExpense: Float = 0f,
-    val consumptionSeries: List<ConsumptionPoint> = emptyList(),
-    val monthlySpend: List<MonthlySpend> = emptyList()
+    val period: StatsPeriod = StatsPeriod.YEAR,
+    val stats: PeriodStats = PeriodStats(),
+    val months: List<MonthBucket> = emptyList(),
+    val intervals: List<ConsumptionInterval> = emptyList()
 )
 
 @HiltViewModel
 class StatsViewModel @Inject constructor(
-    private val vehicleRepository: VehicleRepository,
-    private val tripRepository: TripRepository,
-    private val fillupRepository: FillupRepository,
-    private val expenseRepository: ExpenseRepository
+    vehicleDataSource: VehicleDataSource
 ) : ViewModel() {
-    val activeVehicle = vehicleRepository.getSelectedVehicle()
-        .stateIn(viewModelScope, SharingStarted.Lazily, null)
+    private val period = MutableStateFlow(StatsPeriod.YEAR)
 
-    val uiState = activeVehicle
-        .filterNotNull()
-        .flatMapLatest { vehicle ->
-            combine(
-                combine(
-                    tripRepository.getTotalDistanceForVehicle(vehicle.id),
-                    tripRepository.getTripCountForVehicle(vehicle.id)
-                ) { distance, count -> distance to count },
-                combine(
-                    fillupRepository.getTotalFuelCostForVehicle(vehicle.id),
-                    fillupRepository.getTotalLitersForVehicle(vehicle.id)
-                ) { cost, liters -> cost to liters },
-                fillupRepository.getFillupsByVehicle(vehicle.id),
-                expenseRepository.getTotalExpenseForVehicle(vehicle.id)
-            ) { distanceAndCount, costAndLiters, fillups, expense ->
-                val distance = distanceAndCount.first ?: 0f
-                val count = distanceAndCount.second
-                val cost = costAndLiters.first ?: 0f
-                val liters = costAndLiters.second ?: 0f
-                val consumptionSeries = computeConsumptionSeries(fillups)
-                val monthlySpend = computeMonthlySpend(fillups)
-                StatsUiState(
-                    vehicleName = vehicle.name,
-                    unit = vehicle.odometerUnit,
-                    totalDistance = distance,
-                    totalFuelCost = cost,
-                    totalLiters = liters,
-                    tripCount = count,
-                    avgConsumption = consumptionSeries.lastOrNull()?.value,
-                    costPerKm = if (distance > 0) cost / distance else null,
-                    totalExpense = expense ?: 0f,
-                    consumptionSeries = consumptionSeries,
-                    monthlySpend = monthlySpend
-                )
-            }
-        }
-        .stateIn(viewModelScope, SharingStarted.Lazily, StatsUiState())
-
-    private fun computeConsumptionSeries(fillups: List<Fillup>): List<ConsumptionPoint> {
-        val sorted = fillups.sortedBy { it.odometer }
-        val result = mutableListOf<ConsumptionPoint>()
-        var previousFullTank: Fillup? = null
-        for (fillup in sorted) {
-            if (fillup.isFullTank) {
-                previousFullTank?.let { previous ->
-                    val distance = fillup.odometer - previous.odometer
-                    if (distance > 0) {
-                        result.add(
-                            ConsumptionPoint(
-                                date = fillup.date,
-                                value = (fillup.liters / distance) * 100f
-                            )
-                        )
-                    }
-                }
-                previousFullTank = fillup
-            }
-        }
-        return result
+    val uiState = combine(vehicleDataSource.selectedVehicleData(), period) { data, p ->
+        if (data == null) return@combine StatsUiState(loaded = true, period = p)
+        StatsUiState(
+            hasVehicle = true,
+            loaded = true,
+            unit = data.vehicle.odometerUnit,
+            period = p,
+            stats = VehicleAnalytics.periodStats(data.vehicle, data.fillups, data.trips, data.expenses, p),
+            months = VehicleAnalytics.monthlyBuckets(data.vehicle, data.fillups, data.trips, data.expenses, months = 12),
+            intervals = VehicleAnalytics.consumptionIntervals(data.fillups).takeLast(16)
+        )
     }
+        .flowOn(Dispatchers.Default)
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), StatsUiState())
 
-    private fun computeMonthlySpend(fillups: List<Fillup>): List<MonthlySpend> {
-        val fmt = SimpleDateFormat("yyyy-MM", Locale.getDefault())
-        return fillups
-            .groupBy { fmt.format(Date(it.date)) }
-            .map { (label, list) ->
-                MonthlySpend(label, list.sumOf { it.totalCost.toDouble() }.toFloat())
-            }
-            .sortedBy { it.label }
+    fun setPeriod(p: StatsPeriod) {
+        period.value = p
     }
+}
+
+private enum class Trend(val label: String) {
+    DISTANCE("Distance"), ODOMETER("Odometer"), COST("Costs"), CONSUMPTION("Consumption")
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun StatsScreen(
-    onBack: (() -> Unit)? = null,
+    onAddVehicle: () -> Unit = {},
     viewModel: StatsViewModel = hiltViewModel()
 ) {
-    val state by viewModel.uiState.collectAsState()
-    val activeVehicle by viewModel.activeVehicle.collectAsState()
+    val state by viewModel.uiState.collectAsStateWithLifecycle()
+    val scrollBehavior = TopAppBarDefaults.pinnedScrollBehavior()
 
     Scaffold(
-        topBar = {
-            TopAppBar(
-                title = { Text("Statistics") },
-                navigationIcon = {
-                    if (onBack != null) {
-                        IconButton(onClick = onBack) {
-                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
-                        }
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.surface,
-                    titleContentColor = MaterialTheme.colorScheme.onSurface
-                )
-            )
-        }
+        modifier = Modifier.nestedScroll(scrollBehavior.nestedScrollConnection),
+        topBar = { TopAppBar(title = { Text("Statistics") }, scrollBehavior = scrollBehavior) }
     ) { padding ->
-        if (activeVehicle == null) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(padding),
-                contentAlignment = Alignment.Center
-            ) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Icon(
-                        Icons.Default.DirectionsCar,
-                        contentDescription = null,
-                        modifier = Modifier.size(64.dp),
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Spacer(modifier = Modifier.height(16.dp))
-                    Text(
-                        "No active vehicle",
-                        style = MaterialTheme.typography.bodyLarge
-                    )
-                    Text(
-                        "Add a vehicle to see statistics",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
+        if (!state.loaded) return@Scaffold
+        if (!state.hasVehicle) {
+            NoActiveVehicleMessage(padding, "Add a vehicle to see statistics.", onAddVehicle)
             return@Scaffold
         }
-
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
                 .verticalScroll(rememberScrollState())
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
+                .padding(horizontal = 16.dp)
+                .padding(bottom = 24.dp),
+            verticalArrangement = Arrangement.spacedBy(20.dp)
         ) {
-            StatsSummaryCard(state)
+            TrendsCard(state)
 
-            ConsumptionChartCard(state)
+            SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+                val options = listOf(
+                    StatsPeriod.MONTH to "30 days",
+                    StatsPeriod.QUARTER to "3 months",
+                    StatsPeriod.YEAR to "Year",
+                    StatsPeriod.ALL to "All"
+                )
+                options.forEachIndexed { i, (p, label) ->
+                    SegmentedButton(
+                        selected = state.period == p,
+                        onClick = { viewModel.setPeriod(p) },
+                        shape = SegmentedButtonDefaults.itemShape(i, options.size),
+                        icon = {}
+                    ) { Text(label, maxLines = 1) }
+                }
+            }
 
-            MonthlySpendCard(state)
-
-            ExpenseSummaryCard(state)
+            FillupSection(state)
+            CostSection(state)
+            DistanceSection(state)
         }
     }
 }
 
 @Composable
-fun StatsSummaryCard(state: StatsUiState) {
-    Card(
+private fun TrendsCard(state: StatsUiState) {
+    val money = LocalMoney.current
+    val unit = state.unit
+    var trend by rememberSaveable { mutableStateOf(Trend.DISTANCE) }
+    val monthLabels = state.months.map { formatMonth(it.monthStart) }
+
+    ElevatedCard(
         modifier = Modifier.fillMaxWidth(),
-        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+        colors = CardDefaults.elevatedCardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+        elevation = CardDefaults.elevatedCardElevation(defaultElevation = 0.dp)
     ) {
-        Column(modifier = Modifier.padding(16.dp)) {
-            Text(
-                state.vehicleName ?: "Vehicle",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold
-            )
-            Spacer(modifier = Modifier.height(12.dp))
-
+        Column(modifier = Modifier.padding(vertical = 16.dp)) {
             Row(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .horizontalScroll(rememberScrollState())
+                    .padding(horizontal = 16.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                StatCard(
-                    title = "Total Distance",
-                    value = Units.formatDistance(state.totalDistance, state.unit),
-                    modifier = Modifier.weight(1f)
-                )
-                StatCard(
-                    title = "Total Trips",
-                    value = state.tripCount.toString(),
-                    modifier = Modifier.weight(1f)
-                )
+                Trend.entries.forEach { t ->
+                    FilterChip(
+                        selected = trend == t,
+                        onClick = { trend = t },
+                        label = { Text(t.label) }
+                    )
+                }
             }
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                StatCard(
-                    title = "Fuel Cost",
-                    value = "$${String.format("%.2f", state.totalFuelCost)}",
-                    modifier = Modifier.weight(1f)
-                )
-                StatCard(
-                    title = "Fuel Used",
-                    value = Units.formatFuel(state.totalLiters, state.unit),
-                    modifier = Modifier.weight(1f)
-                )
-            }
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                StatCard(
-                    title = if (state.unit == DistanceUnit.MILES) "Avg Consumption" else "Avg Consumption",
-                    value = state.avgConsumption?.let {
-                        Units.formatConsumption(it, state.unit)
-                    } ?: "--",
-                    modifier = Modifier.weight(1f)
-                )
-                StatCard(
-                    title = "Cost per ${Units.distanceLabel(state.unit)}",
-                    value = state.costPerKm?.let {
-                        val costPerUnit = if (state.unit == DistanceUnit.MILES) it * 1.609344f else it
-                        "$${String.format("%.3f", costPerUnit)}"
-                    } ?: "--",
-                    modifier = Modifier.weight(1f)
-                )
-            }
-        }
-    }
-}
-
-@Composable
-fun ConsumptionChartCard(state: StatsUiState) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
-    ) {
-        Column(modifier = Modifier.padding(16.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(
-                    Icons.Default.Speed,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.primary
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-                Text(
-                    "Consumption Trend (${Units.consumptionLabel(state.unit)})",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold
-                )
-            }
-            Spacer(modifier = Modifier.height(12.dp))
-
-            if (state.consumptionSeries.isEmpty()) {
-                EmptyChartMessage("Add at least two full-tank fill-ups to see the trend")
-            } else {
-                LineChart(
-                    points = state.consumptionSeries.map {
-                        Units.consumption(it.value, state.unit)
-                    },
-                    labels = state.consumptionSeries.map { point ->
-                        SimpleDateFormat("MMM yy", Locale.getDefault()).format(Date(point.date))
+            Spacer(Modifier.height(16.dp))
+            Column(modifier = Modifier.padding(horizontal = 16.dp)) {
+                val primary = MaterialTheme.colorScheme.primary
+                val tertiary = MaterialTheme.colorScheme.tertiary
+                val hasMonthData = state.months.any { it.distanceKm > 0f || it.totalCost > 0f || it.odometerKm != null }
+                when (trend) {
+                    Trend.DISTANCE -> if (!hasMonthData) ChartEmpty("Log trips or fill-ups to see distance per month.") else BarChart(
+                        entries = state.months.map { ChartEntry(formatMonth(it.monthStart), listOf(Units.distance(it.distanceKm, unit))) },
+                        series = listOf(ChartSeries("Distance", primary)),
+                        valueFormatter = { String.format(Locale.getDefault(), "%,.0f %s", it, Units.distanceLabel(unit)) },
+                        axisFormatter = { compactNumber(it) },
+                        readoutTitle = { e -> "${fullMonth(state, e)} · distance" }
+                    )
+                    Trend.ODOMETER -> {
+                        val points = state.months.filter { it.odometerKm != null }
+                        if (points.size < 2) ChartEmpty("Odometer readings from at least two months are needed.")
+                        else LineChart(
+                            labels = points.map { formatMonth(it.monthStart) },
+                            values = points.map { Units.distance(it.odometerKm!!.toFloat(), unit) },
+                            color = primary,
+                            valueFormatter = { String.format(Locale.getDefault(), "%,.0f %s", it, Units.distanceLabel(unit)) },
+                            axisFormatter = { compactNumber(it) },
+                            readoutTitle = { i -> "${formatMonthYear(points[i].monthStart)} · odometer" }
+                        )
                     }
-                )
-            }
-        }
-    }
-}
-
-@Composable
-fun MonthlySpendCard(state: StatsUiState) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
-    ) {
-        Column(modifier = Modifier.padding(16.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(
-                    Icons.Default.AttachMoney,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.tertiary
-                )
-                Spacer(modifier = Modifier.width(8.dp))
+                    Trend.COST -> if (state.months.all { it.totalCost == 0f }) ChartEmpty("Log fill-ups or expenses to see monthly costs.") else BarChart(
+                        entries = state.months.map { ChartEntry(formatMonth(it.monthStart), listOf(it.fuelCost, it.otherCost)) },
+                        series = listOf(ChartSeries("Fuel", primary), ChartSeries("Other", tertiary)),
+                        valueFormatter = { money.format(it) },
+                        axisFormatter = { money.formatCompact(it) },
+                        readoutTitle = { e -> "${fullMonth(state, e)} · total" }
+                    )
+                    Trend.CONSUMPTION -> if (state.intervals.size < 2) ChartEmpty(
+                        "Consumption is measured between full-tank fill-ups. Log a few more to see the trend."
+                    ) else LineChart(
+                        labels = state.intervals.map { formatShortDate(it.endDate) },
+                        values = state.intervals.map { Units.consumption(it.litersPer100Km, unit) },
+                        color = tertiary,
+                        valueFormatter = { String.format(Locale.getDefault(), "%.1f %s", it, Units.consumptionLabel(unit)) },
+                        axisFormatter = { String.format(Locale.getDefault(), "%.0f", it) },
+                        readoutTitle = { i ->
+                            val interval = state.intervals[i]
+                            "Tank ending ${formatShortDate(interval.endDate)} · ${Units.formatWholeDistance(interval.distanceKm, unit)}"
+                        }
+                    )
+                }
+                Spacer(Modifier.height(8.dp))
                 Text(
-                    "Monthly Fuel Spend",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold
-                )
-            }
-            Spacer(modifier = Modifier.height(12.dp))
-
-            if (state.monthlySpend.isEmpty()) {
-                EmptyChartMessage("No fuel spend data yet")
-            } else {
-                BarChart(
-                    values = state.monthlySpend.map { it.value },
-                    labels = state.monthlySpend.map {
-                        SimpleDateFormat("MMM yy", Locale.getDefault())
-                            .format(Date(monthToMillis(it.label)))
-                    }
-                )
-            }
-        }
-    }
-}
-
-@Composable
-fun ExpenseSummaryCard(state: StatsUiState) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
-    ) {
-        Column(modifier = Modifier.padding(16.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(
-                    Icons.Default.Receipt,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.secondary
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-                Text(
-                    "Non-Fuel Expenses",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold
-                )
-            }
-            Spacer(modifier = Modifier.height(8.dp))
-            Text(
-                "Total: $${String.format("%.2f", state.totalExpense)}",
-                style = MaterialTheme.typography.bodyLarge
-            )
-            Spacer(modifier = Modifier.height(4.dp))
-            if (state.totalDistance > 0) {
-                val combinedPerKm = (state.totalFuelCost + state.totalExpense) / state.totalDistance
-                val combinedPerUnit = if (state.unit == DistanceUnit.MILES) combinedPerKm * 1.609344f else combinedPerKm
-                Text(
-                    "True cost per ${Units.distanceLabel(state.unit)} (fuel + expenses): $${String.format("%.3f", combinedPerUnit)}",
-                    style = MaterialTheme.typography.bodyMedium,
+                    if (trend == Trend.CONSUMPTION) "Per full tank, most recent ${state.intervals.size}"
+                    else "Last 12 months",
+                    style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
@@ -393,178 +212,134 @@ fun ExpenseSummaryCard(state: StatsUiState) {
     }
 }
 
-@Composable
-fun StatCard(
-    title: String,
-    value: String,
-    modifier: Modifier = Modifier
-) {
-    Card(
-        modifier = modifier,
-        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
-    ) {
-        Column(modifier = Modifier.padding(12.dp)) {
-            Text(
-                title,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            Text(
-                value,
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.Bold
-            )
-        }
-    }
+private fun fullMonth(state: StatsUiState, entry: ChartEntry): String =
+    state.months.firstOrNull { formatMonth(it.monthStart) == entry.label }?.let { formatMonthYear(it.monthStart) } ?: entry.label
+
+private fun compactNumber(value: Float): String = when {
+    value >= 1_000_000f -> String.format(Locale.getDefault(), "%.1fM", value / 1_000_000f)
+    value >= 10_000f -> String.format(Locale.getDefault(), "%.0fk", value / 1_000f)
+    value >= 1_000f -> String.format(Locale.getDefault(), "%.1fk", value / 1_000f)
+    else -> String.format(Locale.getDefault(), "%.0f", value)
 }
 
 @Composable
-fun EmptyChartMessage(message: String) {
+private fun ChartEmpty(message: String) {
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .height(100.dp),
-        contentAlignment = Alignment.Center
+            .height(200.dp),
+        contentAlignment = androidx.compose.ui.Alignment.Center
     ) {
         Text(
             message,
             style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = androidx.compose.ui.text.style.TextAlign.Center
         )
     }
 }
 
 @Composable
-fun LineChart(
-    points: List<Float>,
-    labels: List<String>,
-    modifier: Modifier = Modifier
-) {
-    if (points.size < 2) {
-        EmptyChartMessage("Not enough data points")
-        return
-    }
-
-    val gridColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f)
-    val lineColor = MaterialTheme.colorScheme.primary
-    val labelColor = MaterialTheme.colorScheme.onSurfaceVariant
-    val maxValue = points.maxOrNull() ?: 1f
-    val minValue = points.minOrNull() ?: 0f
-    val range = (maxValue - minValue).coerceAtLeast(0.1f)
-
-    Column(modifier = modifier) {
-        Canvas(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(180.dp)
-        ) {
-            val stepX = size.width / (points.size - 1)
-            val topPad = 8.dp.toPx()
-            val bottom = size.height - 8.dp.toPx()
-
-            for (i in 0..4) {
-                val y = topPad + (bottom - topPad) * i / 4
-                drawLine(gridColor, Offset(0f, y), Offset(size.width, y), 1f)
-            }
-
-            val path = Path()
-            points.forEachIndexed { index, value ->
-                val x = index * stepX
-                val y = bottom - ((value - minValue) / range) * (bottom - topPad)
-                val point = Offset(x, y)
-                if (index == 0) {
-                    path.moveTo(point.x, point.y)
-                } else {
-                    path.lineTo(point.x, point.y)
+private fun FillupSection(state: StatsUiState) {
+    val s = state.stats.fillups
+    val unit = state.unit
+    val money = LocalMoney.current
+    fun cons(v: Float?) = v?.let { Units.formatConsumption(it, unit) } ?: "--"
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        SectionHeader("Fill-ups")
+        StatGrid(
+            listOf(
+                { m -> StatTile("Fill-ups", s.count.toString(), m, icon = Icons.Default.LocalGasStation) },
+                { m -> StatTile("Total fuel", Units.formatFuel(s.totalLiters, unit), m, icon = Icons.Default.WaterDrop) },
+                { m ->
+                    StatTile(
+                        "Avg consumption", cons(s.avgConsumption), m,
+                        icon = Icons.Default.Speed,
+                        containerColor = MaterialTheme.colorScheme.primaryContainer,
+                        contentColor = MaterialTheme.colorScheme.onPrimaryContainer
+                    )
+                },
+                { m -> StatTile("Avg per fill-up", s.avgLitersPerFill?.let { Units.formatFuel(it, unit) } ?: "--", m) },
+                { m -> StatTile("Best", cons(s.bestConsumption), m, icon = Icons.AutoMirrored.Filled.TrendingDown) },
+                { m -> StatTile("Worst", cons(s.worstConsumption), m, icon = Icons.AutoMirrored.Filled.TrendingUp) },
+                { m ->
+                    StatTile(
+                        "Avg price", s.avgPricePerLiter?.let { Units.formatPricePerUnit(it, unit, money) } ?: "--", m
+                    )
                 }
-            }
-            drawPath(path, lineColor, style = Stroke(width = 3.dp.toPx()))
-
-            points.forEachIndexed { index, value ->
-                val x = index * stepX
-                val y = bottom - ((value - minValue) / range) * (bottom - topPad)
-                drawCircle(lineColor, radius = 4.dp.toPx(), center = Offset(x, y))
-            }
-        }
-        Spacer(modifier = Modifier.height(4.dp))
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
-            Text(
-                labels.firstOrNull() ?: "",
-                style = MaterialTheme.typography.labelSmall,
-                color = labelColor
             )
-            Text(
-                labels.lastOrNull() ?: "",
-                style = MaterialTheme.typography.labelSmall,
-                color = labelColor
-            )
-        }
+        )
     }
 }
 
 @Composable
-fun BarChart(
-    values: List<Float>,
-    labels: List<String>,
-    modifier: Modifier = Modifier
-) {
-    if (values.isEmpty()) {
-        EmptyChartMessage("No data points")
-        return
-    }
-
-    val barColor = MaterialTheme.colorScheme.tertiary
-    val labelColor = MaterialTheme.colorScheme.onSurfaceVariant
-    val maxValue = values.maxOrNull() ?: 1f
-
-    Column(modifier = modifier) {
-        Canvas(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(180.dp)
-        ) {
-            val slotWidth = size.width / values.size
-            val barWidth = slotWidth * 0.6f
-            val bottom = size.height - 8.dp.toPx()
-
-            values.forEachIndexed { index, value ->
-                val x = slotWidth * index + (slotWidth - barWidth) / 2
-                val barHeight = (value / maxValue) * (size.height - 24.dp.toPx())
-                drawRoundRect(
-                    color = barColor,
-                    topLeft = Offset(x, bottom - barHeight),
-                    size = Size(barWidth, barHeight),
-                    cornerRadius = CornerRadius(4.dp.toPx())
-                )
-            }
-        }
-        Spacer(modifier = Modifier.height(4.dp))
-        Row(
+private fun CostSection(state: StatsUiState) {
+    val c = state.stats.cost
+    val unit = state.unit
+    val money = LocalMoney.current
+    val perUnit = "per ${Units.distanceLabel(unit)}"
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        SectionHeader("Costs")
+        StatTile(
+            label = "Total cost",
+            value = money.format(c.totalCost),
+            supporting = "Fuel ${money.format(c.fuelCost)} · Other ${money.format(c.otherCost)}",
+            icon = Icons.Default.Payments,
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween
-        ) {
-            Text(
-                labels.firstOrNull() ?: "",
-                style = MaterialTheme.typography.labelSmall,
-                color = labelColor
+            containerColor = MaterialTheme.colorScheme.tertiaryContainer,
+            contentColor = MaterialTheme.colorScheme.onTertiaryContainer
+        )
+        StatGrid(
+            listOf(
+                { m -> StatTile("Lowest bill", c.lowestBill?.let { money.format(it) } ?: "--", m, icon = Icons.Default.ArrowDownward) },
+                { m -> StatTile("Highest bill", c.highestBill?.let { money.format(it) } ?: "--", m, icon = Icons.Default.ArrowUpward) },
+                { m ->
+                    StatTile(
+                        "Cost $perUnit",
+                        c.costPerKm?.let { money.formatPrecise(Units.costPerDistance(it, unit)) } ?: "--", m,
+                        supporting = "Fuel + expenses"
+                    )
+                },
+                { m ->
+                    StatTile(
+                        "Fuel $perUnit",
+                        c.fuelCostPerKm?.let { money.formatPrecise(Units.costPerDistance(it, unit)) } ?: "--", m,
+                        supporting = c.avgBill?.let { "Avg bill ${money.format(it)}" }
+                    )
+                }
             )
-            Text(
-                labels.lastOrNull() ?: "",
-                style = MaterialTheme.typography.labelSmall,
-                color = labelColor
-            )
-        }
+        )
     }
 }
 
-private fun monthToMillis(monthLabel: String): Long {
-    return try {
-        SimpleDateFormat("yyyy-MM", Locale.getDefault())
-            .parse(monthLabel)?.time ?: System.currentTimeMillis()
-    } catch (_: Exception) {
-        System.currentTimeMillis()
+@Composable
+private fun DistanceSection(state: StatsUiState) {
+    val d = state.stats.distance
+    val unit = state.unit
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        SectionHeader("Distance")
+        StatGrid(
+            listOf(
+                { m ->
+                    StatTile(
+                        "Driven", Units.formatWholeDistance(d.totalKm, unit), m,
+                        icon = Icons.Default.Route,
+                        supporting = "From odometer and trips",
+                        containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                        contentColor = MaterialTheme.colorScheme.onSecondaryContainer
+                    )
+                },
+                { m ->
+                    StatTile(
+                        "Tracked trips", d.tripCount.toString(), m,
+                        icon = Icons.Default.GpsFixed,
+                        supporting = Units.formatWholeDistance(d.trackedKm, unit)
+                    )
+                },
+                { m -> StatTile("Longest trip", d.longestTripKm?.let { Units.formatDistance(it, unit) } ?: "--", m) },
+                { m -> StatTile("Per day", d.avgPerDayKm?.let { Units.formatDistance(it, unit) } ?: "--", m) },
+                { m -> StatTile("Per month", d.avgPerMonthKm?.let { Units.formatWholeDistance(it, unit) } ?: "--", m) }
+            )
+        )
     }
 }

@@ -2,428 +2,353 @@ package com.github.vermilion10.milea.ui.screens.expense
 
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.ViewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
+import com.github.vermilion10.milea.data.model.DistanceUnit
 import com.github.vermilion10.milea.data.model.Expense
 import com.github.vermilion10.milea.data.model.ExpenseCategory
 import com.github.vermilion10.milea.data.repository.ExpenseRepository
-import com.github.vermilion10.milea.data.repository.VehicleRepository
-import com.github.vermilion10.milea.ui.components.NoActiveVehicleMessage
+import com.github.vermilion10.milea.domain.VehicleData
+import com.github.vermilion10.milea.domain.VehicleDataSource
+import com.github.vermilion10.milea.ui.components.*
+import com.github.vermilion10.milea.util.LocalMoney
+import com.github.vermilion10.milea.util.Units
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
-import java.text.SimpleDateFormat
-import java.util.*
+import java.util.Calendar
 import javax.inject.Inject
+
+data class ExpenseListState(
+    val data: VehicleData? = null,
+    val yearTotal: Float = 0f,
+    val loaded: Boolean = false
+)
 
 @HiltViewModel
 class ExpenseListViewModel @Inject constructor(
     private val expenseRepository: ExpenseRepository,
-    private val vehicleRepository: VehicleRepository
+    vehicleDataSource: VehicleDataSource
 ) : ViewModel() {
-    val activeVehicle = vehicleRepository.getSelectedVehicle()
-        .stateIn(viewModelScope, SharingStarted.Lazily, null)
-
-    private val _selectedVehicleId = MutableStateFlow<Long?>(null)
-    val selectedVehicleId = _selectedVehicleId.asStateFlow()
-
-    val expenses = selectedVehicleId
-        .filterNotNull()
-        .flatMapLatest { vehicleId ->
-            expenseRepository.getExpensesByVehicle(vehicleId)
+    val state = vehicleDataSource.selectedVehicleData()
+        .map { data ->
+            val yearStart = Calendar.getInstance().apply {
+                set(Calendar.DAY_OF_YEAR, 1)
+                set(Calendar.HOUR_OF_DAY, 0); set(Calendar.MINUTE, 0)
+                set(Calendar.SECOND, 0); set(Calendar.MILLISECOND, 0)
+            }.timeInMillis
+            ExpenseListState(
+                data = data,
+                yearTotal = data?.expenses?.filter { it.date >= yearStart }
+                    ?.sumOf { it.amount.toDouble() }?.toFloat() ?: 0f,
+                loaded = true
+            )
         }
-        .stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), ExpenseListState())
 
-    private val _showAddDialog = MutableStateFlow(false)
-    val showAddDialog = _showAddDialog.asStateFlow()
-
-    private val _expenseToEdit = MutableStateFlow<Expense?>(null)
-    val expenseToEdit = _expenseToEdit.asStateFlow()
-
-    fun setActiveVehicle(vehicleId: Long) {
-        _selectedVehicleId.value = vehicleId
-    }
-
-    fun setShowAddDialog(show: Boolean) {
-        _showAddDialog.value = show
-    }
-
-    fun setExpenseToEdit(expense: Expense?) {
-        _expenseToEdit.value = expense
-    }
-
-    fun addExpense(expense: Expense) {
+    fun save(expense: Expense) {
         viewModelScope.launch {
-            expenseRepository.insertExpense(expense)
+            if (expense.id == 0L) expenseRepository.insertExpense(expense)
+            else expenseRepository.updateExpense(expense.copy(updatedAt = System.currentTimeMillis()))
         }
     }
 
-    fun updateExpense(expense: Expense) {
-        viewModelScope.launch {
-            expenseRepository.updateExpense(expense.copy(updatedAt = System.currentTimeMillis()))
-        }
+    fun delete(expense: Expense) {
+        viewModelScope.launch { expenseRepository.deleteExpense(expense) }
     }
 
-    fun deleteExpense(expense: Expense) {
-        viewModelScope.launch {
-            expenseRepository.deleteExpense(expense)
-        }
+    fun restore(expense: Expense) {
+        viewModelScope.launch { expenseRepository.insertExpense(expense) }
     }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ExpenseListScreen(
+    onAddVehicle: () -> Unit = {},
     viewModel: ExpenseListViewModel = hiltViewModel()
 ) {
-    val activeVehicle by viewModel.activeVehicle.collectAsState()
-    val expenses by viewModel.expenses.collectAsState()
-    val showAddDialog by viewModel.showAddDialog.collectAsState()
-    val expenseToEdit by viewModel.expenseToEdit.collectAsState()
+    val state by viewModel.state.collectAsStateWithLifecycle()
+    val money = LocalMoney.current
+    val data = state.data
+    val unit = data?.vehicle?.odometerUnit ?: DistanceUnit.KILOMETERS
 
-    LaunchedEffect(activeVehicle) {
-        activeVehicle?.let { viewModel.setActiveVehicle(it.id) }
-    }
+    var editorOpen by remember { mutableStateOf(false) }
+    var editorTarget by remember { mutableStateOf<Expense?>(null) }
+    val snackbar = remember { SnackbarHostState() }
+    val scope = rememberCoroutineScope()
+    val listState = rememberLazyListState()
+    val scrollBehavior = TopAppBarDefaults.pinnedScrollBehavior()
 
     Scaffold(
-        topBar = {
-            TopAppBar(
-                title = { Text("Expenses") },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.surface,
-                    titleContentColor = MaterialTheme.colorScheme.onSurface
-                )
-            )
-        },
+        modifier = Modifier.nestedScroll(scrollBehavior.nestedScrollConnection),
+        topBar = { TopAppBar(title = { Text("Expenses") }, scrollBehavior = scrollBehavior) },
+        snackbarHost = { SnackbarHost(snackbar) },
         floatingActionButton = {
-            if (activeVehicle != null) {
-                FloatingActionButton(
-                    onClick = { viewModel.setShowAddDialog(true) }
-                ) {
-                    Icon(Icons.Default.Add, contentDescription = "Add Expense")
-                }
+            if (data != null) {
+                ExtendedFloatingActionButton(
+                    onClick = { editorTarget = null; editorOpen = true },
+                    expanded = listState.firstVisibleItemIndex == 0,
+                    icon = { Icon(Icons.Default.Add, contentDescription = null) },
+                    text = { Text("Add expense") }
+                )
             }
         }
     ) { padding ->
-        if (activeVehicle == null) {
-            NoActiveVehicleMessage(
-                padding = padding,
-                message = "Add a vehicle first to log expenses."
-            )
-        } else if (expenses.isEmpty()) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(padding),
-                contentAlignment = Alignment.Center
-            ) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Icon(
-                        Icons.Default.Receipt,
-                        contentDescription = null,
-                        modifier = Modifier.size(64.dp),
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Spacer(modifier = Modifier.height(16.dp))
-                    Text(
-                        "No expenses recorded yet",
-                        style = MaterialTheme.typography.bodyLarge
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Text(
-                        "Track maintenance, insurance, and more",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
-        } else {
-            LazyColumn(
+        when {
+            !state.loaded -> Unit
+            data == null -> NoActiveVehicleMessage(padding, "Add a vehicle first to log expenses.", onAddVehicle)
+            data.expenses.isEmpty() -> EmptyState(
+                icon = Icons.Default.Receipt,
+                title = "No expenses yet",
+                message = "Track servicing, insurance, tolls, parking and more to see what the vehicle really costs to run.",
                 modifier = Modifier.padding(padding),
-                contentPadding = PaddingValues(16.dp),
+                action = { Button(onClick = { editorTarget = null; editorOpen = true }) { Text("Add expense") } }
+            )
+            else -> LazyColumn(
+                state = listState,
+                modifier = Modifier.padding(padding),
+                contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 96.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                items(expenses) { expense ->
-                    ExpenseCard(
-                        expense = expense,
-                        unit = activeVehicle?.odometerUnit
-                            ?: com.github.vermilion10.milea.data.model.DistanceUnit.KILOMETERS,
-                        onEdit = { viewModel.setExpenseToEdit(expense) }
+                item {
+                    StatTile(
+                        label = "Spent this year",
+                        value = money.format(state.yearTotal),
+                        supporting = "Excludes fuel",
+                        modifier = Modifier.fillMaxWidth(),
+                        containerColor = MaterialTheme.colorScheme.tertiaryContainer,
+                        contentColor = MaterialTheme.colorScheme.onTertiaryContainer
                     )
+                    Spacer(Modifier.height(8.dp))
                 }
-            }
-        }
-
-        if (showAddDialog) {
-            AddExpenseDialog(
-                vehicleId = viewModel.selectedVehicleId.value ?: 0,
-                unit = activeVehicle?.odometerUnit
-                    ?: com.github.vermilion10.milea.data.model.DistanceUnit.KILOMETERS,
-                onDismiss = { viewModel.setShowAddDialog(false) },
-                onSave = { expense ->
-                    viewModel.addExpense(expense)
-                    viewModel.setShowAddDialog(false)
-                }
-            )
-        }
-
-        expenseToEdit?.let { expense ->
-            AddExpenseDialog(
-                vehicleId = expense.vehicleId,
-                expense = expense,
-                unit = activeVehicle?.odometerUnit
-                    ?: com.github.vermilion10.milea.data.model.DistanceUnit.KILOMETERS,
-                onDismiss = { viewModel.setExpenseToEdit(null) },
-                onSave = { updated ->
-                    viewModel.updateExpense(updated)
-                    viewModel.setExpenseToEdit(null)
-                },
-                onDelete = {
-                    viewModel.deleteExpense(expense)
-                    viewModel.setExpenseToEdit(null)
-                }
-            )
-        }
-    }
-}
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-fun ExpenseCard(
-    expense: Expense,
-    unit: com.github.vermilion10.milea.data.model.DistanceUnit,
-    onEdit: () -> Unit
-) {
-    val dateFormat = SimpleDateFormat("MMM dd, yyyy", Locale.getDefault())
-
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
-        onClick = onEdit
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Icon(
-                when (expense.category) {
-                    ExpenseCategory.MAINTENANCE -> Icons.Default.Build
-                    ExpenseCategory.INSURANCE -> Icons.Default.Security
-                    ExpenseCategory.TOLLS -> Icons.Default.Toll
-                    ExpenseCategory.PARKING -> Icons.Default.LocalParking
-                    ExpenseCategory.REGISTRATION -> Icons.Default.Description
-                    ExpenseCategory.REPAIRS -> Icons.Default.BuildCircle
-                    ExpenseCategory.OTHER -> Icons.Default.MoreHoriz
-                },
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.size(40.dp)
-            )
-            
-            Spacer(modifier = Modifier.width(16.dp))
-            
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = expense.category.name.lowercase()
-                        .replaceFirstChar { it.titlecase() },
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold
-                )
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        text = dateFormat.format(Date(expense.date)),
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    expense.odometer?.let { odometer ->
-                        Text(
-                            text = " \u2022 ${com.github.vermilion10.milea.util.Units.formatDistanceNumber(odometer.toFloat(), unit)} ${com.github.vermilion10.milea.util.Units.distanceLabel(unit)}",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                }
-                expense.description?.let { desc ->
-                    Text(
-                        text = desc,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
-            
-            Text(
-                text = "$${String.format("%.2f", expense.amount)}",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.primary
-            )
-            Spacer(modifier = Modifier.width(4.dp))
-            Icon(
-                Icons.Default.Edit,
-                contentDescription = "Edit Expense",
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.size(18.dp)
-            )
-        }
-    }
-}
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-fun AddExpenseDialog(
-    vehicleId: Long,
-    expense: Expense? = null,
-    unit: com.github.vermilion10.milea.data.model.DistanceUnit = com.github.vermilion10.milea.data.model.DistanceUnit.KILOMETERS,
-    onDismiss: () -> Unit,
-    onSave: (Expense) -> Unit,
-    onDelete: (() -> Unit)? = null
-) {
-    val isEditing = expense != null
-    var category by remember { mutableStateOf(expense?.category ?: ExpenseCategory.OTHER) }
-    var amount by remember { mutableStateOf(expense?.amount?.toString() ?: "") }
-    var description by remember { mutableStateOf(expense?.description ?: "") }
-    var odometer by remember {
-        mutableStateOf(
-            expense?.odometer?.let {
-                com.github.vermilion10.milea.util.Units.formatDistanceNumber(it.toFloat(), unit)
-            } ?: ""
-        )
-    }
-
-    val distanceLabel = com.github.vermilion10.milea.util.Units.distanceLabel(unit)
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text(if (isEditing) "Edit Expense" else "Add Expense") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                var expanded by remember { mutableStateOf(false) }
-                
-                ExposedDropdownMenuBox(
-                    expanded = expanded,
-                    onExpandedChange = { expanded = it }
-                ) {
-                    OutlinedTextField(
-                        value = category.name.lowercase().replaceFirstChar { it.titlecase() },
-                        onValueChange = {},
-                        readOnly = true,
-                        label = { Text("Category") },
-                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
-                        modifier = Modifier.menuAnchor()
-                    )
-                    
-                    ExposedDropdownMenu(
-                        expanded = expanded,
-                        onDismissRequest = { expanded = false }
-                    ) {
-                        ExpenseCategory.values().forEach { cat ->
-                            DropdownMenuItem(
-                                text = { Text(cat.name.lowercase().replaceFirstChar { it.titlecase() }) },
-                                onClick = {
-                                    category = cat
-                                    expanded = false
-                                }
+                var lastMonth: String? = null
+                data.expenses.forEach { expense ->
+                    val month = formatMonthYear(expense.date)
+                    if (month != lastMonth) {
+                        lastMonth = month
+                        item(key = "h-$month") {
+                            Text(
+                                month,
+                                style = MaterialTheme.typography.labelLarge,
+                                color = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.padding(top = 12.dp, bottom = 4.dp, start = 4.dp)
                             )
                         }
                     }
+                    item(key = expense.id) {
+                        ExpenseItem(expense, unit) { editorTarget = expense; editorOpen = true }
+                    }
                 }
-                
-                OutlinedTextField(
-                    value = amount,
-                    onValueChange = { amount = it },
-                    label = { Text("Amount *") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
+            }
+        }
+    }
+
+    if (editorOpen && data != null) {
+        ExpenseSheet(
+            data = data,
+            existing = editorTarget,
+            onDismiss = { editorOpen = false },
+            onSave = { viewModel.save(it); editorOpen = false },
+            onDelete = { expense ->
+                viewModel.delete(expense)
+                editorOpen = false
+                scope.launch {
+                    val result = snackbar.showSnackbar("Expense deleted", "Undo", duration = SnackbarDuration.Long)
+                    if (result == SnackbarResult.ActionPerformed) viewModel.restore(expense)
+                }
+            }
+        )
+    }
+}
+
+fun ExpenseCategory.icon(): ImageVector = when (this) {
+    ExpenseCategory.MAINTENANCE -> Icons.Default.Build
+    ExpenseCategory.INSURANCE -> Icons.Default.Security
+    ExpenseCategory.TOLLS -> Icons.Default.Toll
+    ExpenseCategory.PARKING -> Icons.Default.LocalParking
+    ExpenseCategory.REGISTRATION -> Icons.Default.Description
+    ExpenseCategory.REPAIRS -> Icons.Default.CarRepair
+    ExpenseCategory.OTHER -> Icons.Default.MoreHoriz
+}
+
+@Composable
+private fun ExpenseItem(expense: Expense, unit: DistanceUnit, onClick: () -> Unit) {
+    val money = LocalMoney.current
+    ElevatedCard(
+        onClick = onClick,
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.elevatedCardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
+        elevation = CardDefaults.elevatedCardElevation(defaultElevation = 0.dp)
+    ) {
+        Row(modifier = Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+            Surface(
+                shape = CircleShape,
+                color = MaterialTheme.colorScheme.tertiaryContainer,
+                modifier = Modifier.size(44.dp)
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(
+                        expense.category.icon(),
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onTertiaryContainer
+                    )
+                }
+            }
+            Spacer(Modifier.width(16.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    expense.description ?: expense.category.label(),
+                    style = MaterialTheme.typography.titleMedium
                 )
-                
-                OutlinedTextField(
-                    value = description,
-                    onValueChange = { description = it },
-                    label = { Text("Description") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-                
-                OutlinedTextField(
-                    value = odometer,
-                    onValueChange = { odometer = it.filter { c -> c.isDigit() || c == '.' } },
-                    label = { Text("Odometer ($distanceLabel)") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
+                Text(
+                    buildString {
+                        if (expense.description != null) append(expense.category.label()).append(" · ")
+                        append(formatShortDate(expense.date))
+                        expense.odometer?.let { append(" · ").append(Units.formatOdometer(it, unit)) }
+                    },
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
-        },
-        confirmButton = {
-            TextButton(
-                onClick = {
-                    val amountValue = amount.toFloatOrNull() ?: 0f
-                    val odometerDisplay = odometer.toFloatOrNull()
-                    val odometerKm = odometerDisplay?.let {
-                        if (unit == com.github.vermilion10.milea.data.model.DistanceUnit.MILES) {
-                            (it / 0.621371f).toLong()
-                        } else {
-                            it.toLong()
-                        }
-                    }
+            Spacer(Modifier.width(8.dp))
+            Text(money.format(expense.amount), style = MaterialTheme.typography.titleMedium)
+        }
+    }
+}
 
-                    if (amountValue > 0) {
-                        val base = expense ?: Expense(
-                            vehicleId = vehicleId,
-                            date = System.currentTimeMillis(),
-                            category = category,
-                            amount = amountValue
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
+@Composable
+fun ExpenseSheet(
+    data: VehicleData,
+    existing: Expense?,
+    onDismiss: () -> Unit,
+    onSave: (Expense) -> Unit,
+    onDelete: (Expense) -> Unit
+) {
+    val money = LocalMoney.current
+    val unit = data.vehicle.odometerUnit
+    var category by remember { mutableStateOf(existing?.category ?: ExpenseCategory.MAINTENANCE) }
+    var amount by remember { mutableStateOf(existing?.amount?.toInputString(money.settings.decimals) ?: "") }
+    var description by remember { mutableStateOf(existing?.description ?: "") }
+    var odometer by remember {
+        mutableStateOf(existing?.odometer?.let { Math.round(Units.distance(it.toFloat(), unit)).toString() } ?: "")
+    }
+    var date by remember { mutableLongStateOf(existing?.date ?: System.currentTimeMillis()) }
+    var showDatePicker by remember { mutableStateOf(false) }
+    val amountValue = amount.toFloatOrNull()?.takeIf { it > 0f }
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        contentWindowInsets = { WindowInsets.ime.union(WindowInsets.navigationBars) }
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 24.dp)
+                .padding(bottom = 24.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    if (existing == null) "Add expense" else "Edit expense",
+                    style = MaterialTheme.typography.headlineSmall,
+                    modifier = Modifier.weight(1f)
+                )
+                AssistChip(
+                    onClick = { showDatePicker = true },
+                    label = { Text(formatRelativeDay(date)) },
+                    leadingIcon = { Icon(Icons.Default.CalendarToday, contentDescription = null, Modifier.size(18.dp)) }
+                )
+            }
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(0.dp)
+            ) {
+                ExpenseCategory.entries.forEach { c ->
+                    FilterChip(
+                        selected = category == c,
+                        onClick = { category = c },
+                        label = { Text(c.label()) },
+                        leadingIcon = { Icon(c.icon(), contentDescription = null, Modifier.size(18.dp)) }
+                    )
+                }
+            }
+            NumberField(
+                value = amount,
+                onValueChange = { amount = it },
+                label = "Amount",
+                decimals = money.settings.decimals,
+                prefix = money.settings.symbol.takeIf { it.isNotBlank() }?.let { "$it " },
+                modifier = Modifier.fillMaxWidth()
+            )
+            OutlinedTextField(
+                value = description,
+                onValueChange = { description = it },
+                label = { Text("Description (optional)") },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
+                modifier = Modifier.fillMaxWidth()
+            )
+            NumberField(
+                value = odometer,
+                onValueChange = { odometer = it },
+                label = "Odometer (optional)",
+                decimals = 0,
+                suffix = Units.distanceLabel(unit),
+                supportingText = if (odometer.isBlank()) "Current: ${Units.formatOdometer(data.currentOdometerKm, unit)}" else null,
+                modifier = Modifier.fillMaxWidth()
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                if (existing != null) {
+                    TextButton(
+                        onClick = { onDelete(existing) },
+                        colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)
+                    ) { Text("Delete") }
+                }
+                Spacer(Modifier.weight(1f))
+                OutlinedButton(onClick = onDismiss) { Text("Cancel") }
+                Button(
+                    enabled = amountValue != null,
+                    onClick = {
+                        val base = existing ?: Expense(
+                            vehicleId = data.vehicle.id, date = date, category = category, amount = 0f
                         )
                         onSave(
                             base.copy(
-                                vehicleId = vehicleId,
+                                date = date,
                                 category = category,
-                                amount = amountValue,
-                                description = description.ifBlank { null },
-                                odometer = odometerKm
+                                amount = amountValue!!,
+                                description = description.trim().ifBlank { null },
+                                odometer = odometer.toFloatOrNull()?.let { Math.round(Units.distanceToKm(it, unit)).toLong() }
                             )
                         )
                     }
-                },
-                enabled = amount.isNotBlank()
-            ) {
-                Text(if (isEditing) "Save" else "Add")
-            }
-        },
-        dismissButton = {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                if (onDelete != null) {
-                    TextButton(
-                        onClick = onDelete,
-                        colors = ButtonDefaults.textButtonColors(
-                            contentColor = MaterialTheme.colorScheme.error
-                        )
-                    ) {
-                        Icon(
-                            Icons.Default.Delete,
-                            contentDescription = null,
-                            modifier = Modifier.size(18.dp)
-                        )
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text("Delete")
-                    }
-                }
-                TextButton(onClick = onDismiss) {
-                    Text("Cancel")
-                }
+                ) { Text("Save") }
             }
         }
-    )
+    }
+
+    if (showDatePicker) {
+        DateTimeKeepingPicker(initial = date, onDismiss = { showDatePicker = false }, onPicked = { date = it })
+    }
 }

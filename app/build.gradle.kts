@@ -15,14 +15,31 @@ android {
         applicationId = "com.github.vermilion10.milea"
         minSdk = 30
         targetSdk = 37
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 2
+        versionName = "0.2.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    // Release signing comes from the environment (set by the release workflow),
+    // so no keystore or password is ever stored in the repository.
+    val releaseKeystore = System.getenv("MILEA_KEYSTORE_FILE")?.let { file(it) }?.takeIf { it.exists() }
+    signingConfigs {
+        if (releaseKeystore != null) {
+            create("release") {
+                storeFile = releaseKeystore
+                storePassword = System.getenv("MILEA_KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("MILEA_KEY_ALIAS")
+                keyPassword = System.getenv("MILEA_KEY_PASSWORD")
+            }
+        }
+    }
+
     buildTypes {
         release {
+            if (releaseKeystore != null) {
+                signingConfig = signingConfigs.getByName("release")
+            }
             isMinifyEnabled = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),

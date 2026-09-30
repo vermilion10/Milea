@@ -6,62 +6,74 @@ See [`docs/PRD.md`](docs/PRD.md) for the original product requirements this was 
 
 ## Features
 
+### Home
+- Odometer at a glance, with a vehicle switcher in the top bar
+- One-tap **Start trip**, **Refuel** and **Expense** (the log forms open right on Home)
+- **Fuel left estimate**: percentage, liters/gallons remaining and approximate range, calculated from the last full tank, later partial fills, distance driven since, and your average consumption
+- This month's distance, spending, fuel and cost per distance, compared with last month
+- Recent activity across trips, fill-ups and expenses
+
 ### Trip logging
-- Manual **Start Trip / Stop Trip**, plus automatic GPS-based start/stop (Settings → Automatic Trip Detection)
-- Live in-progress trip card (distance, duration, current/max speed) while a trip is recording
-- Idle handling: auto-detected trips hand back to monitoring after a few minutes idle; manually-started trips keep recording through ordinary stops (traffic, lights) and only have a long safety-net timeout
-- Route map per trip (OpenStreetMap tiles via osmdroid), with an offline banner when tiles can't be fetched,  the recorded route itself never depends on connectivity
-- Trip categorization (commute / business / leisure / other), with a category filter on the trip list
-- Manual trip entry and editing, including an optional starting odometer reading
-- Moving time vs. idle time, average/max speed, distance, duration per trip
+- Manual **Start trip / Stop and save**, plus automatic GPS-based start/stop (Settings → Automatic trip detection)
+- **Pre-start checks**: if location is off, the trip is blocked and Google's "turn on location" prompt is offered in place; power saving, battery optimization and approximate-only location are shown as warnings with a one-tap fix, or you can start anyway
+- Live trip card on Home and Trips (distance, timer, current/max speed), which survives leaving and reopening the app
+- Live notification with distance, time and a **Stop** action; warns if location is switched off mid-trip
+- Idle handling: auto-detected trips hand back to monitoring after a few minutes idle; manually started trips keep recording through ordinary stops and only have a long safety-net timeout
+- Route map per trip (OpenStreetMap via osmdroid) with an offline banner; the recorded route never depends on connectivity
+- Route colored by speed on the map (green under 20 km/h up to red at 100+), with start/finish markers and a legend
+- Speed and elevation charts per trip; tapping a point pins that spot on the map
+- Time spent in each speed zone, and elevation climb
+- Trip categories (commute / business / leisure / other) with a category filter
+- Manual trip entry and editing, including an optional starting odometer reading; editing only the category, note or date keeps the recorded distance, times and speeds
+
+### Trip posters
+- Strava-style shareable image of any trip: the GPS route traced with a glow, start/end markers, distance, time, average and max speed, date and vehicle
+- Styles: Midnight, Ember, Paper, and **Sticker** (transparent background, for overlaying on your own photo)
+- Formats: Story (9:16), Portrait (4:5), Square (1:1)
+- Share directly to any app or save to `Pictures/Milea`
 
 ### Fuel tracking
-- Log fill-ups: odometer, fuel amount, price/unit, total cost, date, full-tank flag
-- Fully bidirectional calculator, enter any two of {fuel amount, price/unit, total cost} and the third fills in
-- Partial fills: set a **% of tank added** (slider or manual entry) using the vehicle's configured tank capacity, instead of needing to know the exact liters/gallons
-- Auto-suggested price/unit (from your last fill-up) and auto-suggested odometer (from the latest fill-up, trip, or vehicle offset, always editable)
-- Consumption calculation (L/100km or MPG) computed only between consecutive full-tank fill-ups
-- Consumption trend chart and monthly fuel spend chart (hand-drawn Compose Canvas, no external charting library)
-- Cost per distance, and true cost per distance combining fuel + other expenses
+- Refuel form as a bottom sheet: Full tank / Partial, odometer (checked against the fill-ups before and after that date), price per unit prefilled from last time, then enter **one** of amount paid, fuel amount, or the **fuel gauge** reading (where the needle ended up; the level before refuelling is prefilled from Milea's estimate and can be adjusted); the other value is calculated and shown live
+- Optional date, station name and note
+- Edit or delete fill-ups, with undo
+- Consumption (L/100km or MPG) per full-to-full tank, counting partial fills in between, shown on each fill-up
 
 ### Expenses
-- Log maintenance, insurance, tolls, parking, registration, other, with optional odometer reading shown on each entry
-- Edit or delete existing expense entries
-- Total expense stat and combined fuel+expense cost-per-distance stat
+- Maintenance, insurance, tolls, parking, registration, repairs, other, with date, description and optional odometer
+- Edit or delete, with undo; yearly total
+
+### Statistics
+- Period selector: 30 days, 3 months, year, all time
+- Interactive charts (tap or drag to read values): monthly distance, odometer over time, monthly costs split into fuel and other, and consumption per tank
+- **Fill-ups**: count, total fuel, average per fill-up, average / best / worst consumption, average price
+- **Costs**: total (fuel + other), lowest and highest bill, average bill, cost per distance, fuel cost per distance
+- **Distance**: driven (from odometer and trips), tracked trips, longest trip, per-day and per-month averages
 
 ### Multi-vehicle
-- Add, edit, and archive vehicle profiles (make/model/year, fuel type, tank capacity, per-vehicle km/mi unit)
-- One vehicle is "selected" at a time for the Dashboard/Quick Actions, independent of how many other vehicles exist or are archived
-- Quick vehicle switcher on the Dashboard, with total odometer shown next to the vehicle name
-- Odometer offset per vehicle so tracking can start mid-life and stay continuous across trips and fill-ups
+- Add, edit, archive and restore vehicles (make/model/year, fuel type, tank capacity, per-vehicle km/mi unit)
+- Odometer offset per vehicle so tracking can start mid-life and stay continuous across trips, fill-ups and expenses
 
-### Stats & data
-- Dashboard with total distance, trip count, fuel cost/used, average consumption
+### Settings & data
+- Material 3 design with dynamic color (Android 12+), plus System / Light / Dark theme
+- Currency symbol and decimal places (presets for Rp, $, €, £, RM, ¥, ₹), used everywhere amounts are shown
 - CSV export (trips / fill-ups / expenses / all) with share sheet
 - Encrypted local backup and restore (password-protected)
-
-### Quality of life
-- Per-vehicle km/mi and L/gal unit toggle, applied consistently everywhere
-- Dark mode (follows system theme)
-- Fully offline trip recording; map tiles cache once viewed and gracefully show a "route without map" state offline
+- Fully offline trip recording
 
 ## Not yet implemented
 
 Gaps against the original PRD (`docs/PRD.md`), from a manual review while building this, worth a fresh pass before treating this list as final:
 
 **Trip logging**
-- Elevation gain/loss (altitude is captured per GPS point but never aggregated/shown)
 - Geofence-based auto-tagging of home/work trips
 - Date-range filter on the trip list (category filter exists; the DAO query for date range exists but isn't wired to any UI)
 - Harsh braking/acceleration detection
 - Configurable idle/auto-start thresholds (currently hardcoded in `TripTrackingService`, not exposed in Settings)
 
 **Fuel tracking**
-- Station name and location tagging (the `Fillup` model has the fields; there's no input UI for them yet)
+- Station location tagging (station name can be entered; coordinates are not captured)
 - Receipt photo attachment (same, field exists on both `Fillup` and presumably needed for `Expense`, no picker UI)
 - Missed-fill / large-odometer-jump warning
-- Best/worst tank stats
-- Predictive "fuel running low" estimate
 - Regional average price comparison
 
 **Multi-vehicle**
@@ -74,11 +86,11 @@ Gaps against the original PRD (`docs/PRD.md`), from a manual review while buildi
 **Stats & reporting**
 - PDF export
 - CSV import (for migrating from other trackers)
-- Formatted monthly/annual summary report (a monthly spend chart exists; not a full report)
+- Formatted monthly/annual summary report (charts and period stats exist; not an exportable report)
 
 **Reminders & notifications**
 - Reminder data model, DAO, and repository exist, but nothing actually schedules or fires a notification yet (no `WorkManager` job despite the dependency being present) - reminders can be stored but won't currently notify you
-- Low-fuel notification
+- Low-fuel notification (the fuel-left estimate is shown in the app but doesn't notify)
 
 **Backup & sync**
 - Google Drive backup sync (local encrypted backup/restore works; cloud sync doesn't exist)
@@ -91,7 +103,7 @@ Gaps against the original PRD (`docs/PRD.md`), from a manual review while buildi
 - Coroutines + Flow throughout
 - `FusedLocationProviderClient` in a foreground `Service` for trip tracking
 - osmdroid (OpenStreetMap) for the trip map
-- Hand-rolled Compose Canvas charts (no charting library dependency)
+- Hand-rolled Compose Canvas charts and Android Canvas trip posters (no charting or imaging library)
 
 ## Building
 

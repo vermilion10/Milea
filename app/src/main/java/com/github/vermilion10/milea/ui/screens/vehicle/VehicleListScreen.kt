@@ -13,6 +13,15 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardCapitalization
+import androidx.compose.ui.text.input.KeyboardType
+import com.github.vermilion10.milea.ui.components.EmptyState
+import com.github.vermilion10.milea.ui.components.NumberField
+import com.github.vermilion10.milea.ui.components.toInputString
+import com.github.vermilion10.milea.util.Units
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -105,71 +114,66 @@ fun VehicleListScreen(
                             Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
                         }
                     }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.surface,
-                    titleContentColor = MaterialTheme.colorScheme.onSurface
-                )
+                }
             )
         },
         floatingActionButton = {
-            FloatingActionButton(
-                onClick = { viewModel.setShowAddDialog(true) }
-            ) {
-                Icon(Icons.Default.Add, contentDescription = "Add Vehicle")
-            }
+            ExtendedFloatingActionButton(
+                onClick = { viewModel.setShowAddDialog(true) },
+                icon = { Icon(Icons.Default.Add, contentDescription = null) },
+                text = { Text("Add vehicle") }
+            )
         }
     ) { padding ->
         if (vehicles.isEmpty()) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(padding),
-                contentAlignment = Alignment.Center
-            ) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Icon(
-                        Icons.Default.DirectionsCar,
-                        contentDescription = null,
-                        modifier = Modifier.size(64.dp),
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Spacer(modifier = Modifier.height(16.dp))
-                    Text(
-                        "No vehicles added yet",
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Text(
-                        "Tap + to add your first vehicle",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
+            EmptyState(
+                icon = Icons.Default.DirectionsCar,
+                title = "No vehicles yet",
+                message = "Add the car or motorcycle you want to track. You can add more later and switch between them.",
+                modifier = Modifier.padding(padding)
+            )
         } else {
+            val (current, archived) = vehicles.partition { it.isActive }
             LazyColumn(
                 modifier = Modifier.padding(padding),
-                contentPadding = PaddingValues(16.dp),
+                contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 96.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                items(vehicles) { vehicle ->
+                items(current, key = { it.id }) { vehicle ->
                     VehicleCard(
                         vehicle = vehicle,
-                        isActive = vehicle.id == activeVehicle?.id,
+                        isSelected = vehicle.id == activeVehicle?.id,
                         onEdit = { viewModel.setVehicleToEdit(vehicle) },
-                        onSetActive = { viewModel.activateVehicle(vehicle) },
+                        onSelect = { viewModel.activateVehicle(vehicle) },
                         onArchive = { viewModel.archiveVehicle(vehicle) }
                     )
+                }
+                if (archived.isNotEmpty()) {
+                    item {
+                        Text(
+                            "Archived",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.padding(start = 4.dp, top = 16.dp, bottom = 4.dp)
+                        )
+                    }
+                    items(archived, key = { it.id }) { vehicle ->
+                        VehicleCard(
+                            vehicle = vehicle,
+                            isSelected = false,
+                            onEdit = { viewModel.setVehicleToEdit(vehicle) },
+                            onSelect = { viewModel.activateVehicle(vehicle) },
+                            onArchive = null
+                        )
+                    }
                 }
             }
         }
 
         if (showAddDialog) {
-            AddVehicleDialog(
+            VehicleSheet(
                 onDismiss = { viewModel.setShowAddDialog(false) },
-                onAdd = { vehicle ->
+                onSave = { vehicle ->
                     viewModel.addVehicle(vehicle)
                     viewModel.setShowAddDialog(false)
                 }
@@ -177,10 +181,10 @@ fun VehicleListScreen(
         }
 
         vehicleToEdit?.let { vehicle ->
-            AddVehicleDialog(
+            VehicleSheet(
                 vehicle = vehicle,
                 onDismiss = { viewModel.setVehicleToEdit(null) },
-                onAdd = { updated ->
+                onSave = { updated ->
                     viewModel.updateVehicle(updated)
                     viewModel.setVehicleToEdit(null)
                 }
@@ -189,255 +193,221 @@ fun VehicleListScreen(
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun VehicleCard(
     vehicle: Vehicle,
-    isActive: Boolean,
+    isSelected: Boolean,
     onEdit: () -> Unit,
-    onSetActive: () -> Unit,
-    onArchive: () -> Unit
+    onSelect: () -> Unit,
+    onArchive: (() -> Unit)?
 ) {
-    Card(
+    val unit = vehicle.odometerUnit
+    ElevatedCard(
+        onClick = onEdit,
         modifier = Modifier.fillMaxWidth(),
-        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+        colors = CardDefaults.elevatedCardColors(
+            containerColor = if (isSelected) MaterialTheme.colorScheme.primaryContainer
+            else MaterialTheme.colorScheme.surfaceContainerLow
+        ),
+        elevation = CardDefaults.elevatedCardElevation(defaultElevation = 0.dp)
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp)
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
+        Column(modifier = Modifier.padding(start = 16.dp, top = 16.dp, end = 8.dp, bottom = 8.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Surface(
+                    shape = CircleShape,
+                    color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.secondaryContainer,
+                    contentColor = if (isSelected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSecondaryContainer,
+                    modifier = Modifier.size(48.dp)
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            if (vehicle.fuelType == FuelType.ELECTRIC) Icons.Default.ElectricCar else Icons.Default.DirectionsCar,
+                            contentDescription = null
+                        )
+                    }
+                }
+                Spacer(Modifier.width(16.dp))
                 Column(modifier = Modifier.weight(1f)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(
-                            text = vehicle.name,
-                            style = MaterialTheme.typography.titleLarge
-                        )
-                        if (isActive) {
-                            Spacer(modifier = Modifier.width(8.dp))
-                            AssistChip(
-                                onClick = { },
-                                label = { Text("Active") },
-                                leadingIcon = {
-                                    Icon(
-                                        Icons.Default.CheckCircle,
-                                        contentDescription = null,
-                                        modifier = Modifier.size(14.dp)
-                                    )
-                                }
-                            )
-                        } else if (!vehicle.isActive) {
-                            Spacer(modifier = Modifier.width(8.dp))
-                            AssistChip(
-                                onClick = { },
-                                label = { Text("Archived") }
-                            )
-                        }
-                    }
-                    if (vehicle.make != null || vehicle.model != null) {
-                        Text(
-                            text = listOfNotNull(vehicle.make, vehicle.model, vehicle.year?.toString())
-                                .joinToString(" "),
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
+                    Text(vehicle.name, style = MaterialTheme.typography.titleLarge)
                     Text(
-                        text = vehicle.fuelType.name.lowercase().replaceFirstChar { it.titlecase() },
-                        style = MaterialTheme.typography.bodySmall,
+                        listOfNotNull(
+                            listOfNotNull(vehicle.year?.toString(), vehicle.make, vehicle.model).joinToString(" ").ifBlank { null },
+                            vehicle.fuelType.name.lowercase().replaceFirstChar { it.titlecase() },
+                            vehicle.tankCapacity?.let { "${Units.formatFuel(it, unit)} tank" }
+                        ).joinToString(" · "),
+                        style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-                IconButton(onClick = onEdit) {
+                if (isSelected) {
                     Icon(
-                        Icons.Default.Edit,
-                        contentDescription = "Edit Vehicle",
-                        tint = MaterialTheme.colorScheme.primary
+                        Icons.Default.CheckCircle,
+                        contentDescription = "Selected",
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(end = 8.dp)
                     )
                 }
             }
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.End
-            ) {
-                if (!isActive) {
-                    TextButton(onClick = onSetActive) {
-                        Icon(
-                            Icons.Default.CheckCircle,
-                            contentDescription = null,
-                            modifier = Modifier.size(16.dp)
-                        )
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text("Set Active")
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                if (onArchive != null && isSelected) {
+                    TextButton(onClick = onArchive) { Text("Archive") }
+                }
+                if (!isSelected) {
+                    TextButton(onClick = onSelect) {
+                        Text(if (vehicle.isActive) "Select" else "Restore and select")
                     }
                 }
-                if (isActive) {
-                    TextButton(onClick = onArchive) {
-                        Icon(
-                            Icons.Default.Archive,
-                            contentDescription = null,
-                            modifier = Modifier.size(16.dp)
-                        )
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text("Archive")
-                    }
-                }
+                TextButton(onClick = onEdit) { Text("Edit") }
             }
         }
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
-fun AddVehicleDialog(
+fun VehicleSheet(
     vehicle: Vehicle? = null,
     onDismiss: () -> Unit,
-    onAdd: (Vehicle) -> Unit
+    onSave: (Vehicle) -> Unit
 ) {
+    var unit by remember { mutableStateOf(vehicle?.odometerUnit ?: DistanceUnit.KILOMETERS) }
     var name by remember { mutableStateOf(vehicle?.name ?: "") }
     var make by remember { mutableStateOf(vehicle?.make ?: "") }
     var model by remember { mutableStateOf(vehicle?.model ?: "") }
     var year by remember { mutableStateOf(vehicle?.year?.toString() ?: "") }
     var fuelType by remember { mutableStateOf(vehicle?.fuelType ?: FuelType.GASOLINE) }
-    var tankCapacity by remember { mutableStateOf(vehicle?.tankCapacity?.toString() ?: "") }
-    var odometerOffset by remember { mutableStateOf(vehicle?.odometerOffset?.toString() ?: "") }
-    var unit by remember { mutableStateOf(vehicle?.odometerUnit ?: DistanceUnit.KILOMETERS) }
+    // Capacity and offset are stored in liters / km; shown in the vehicle's own units.
+    var tankCapacity by remember {
+        mutableStateOf(vehicle?.tankCapacity?.let { Units.fuel(it, vehicle.odometerUnit).toInputString(1) } ?: "")
+    }
+    var odometerOffset by remember {
+        mutableStateOf(
+            vehicle?.odometerOffset?.takeIf { it > 0 }
+                ?.let { Math.round(Units.distance(it.toFloat(), vehicle.odometerUnit)).toString() } ?: ""
+        )
+    }
 
-    AlertDialog(
+    ModalBottomSheet(
         onDismissRequest = onDismiss,
-        title = { Text(if (vehicle == null) "Add Vehicle" else "Edit Vehicle") },
-        text = {
-            Column(
-                modifier = Modifier.verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                OutlinedTextField(
-                    value = name,
-                    onValueChange = { name = it },
-                    label = { Text("Name *") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        contentWindowInsets = { WindowInsets.ime.union(WindowInsets.navigationBars) }
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 24.dp)
+                .padding(bottom = 24.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            Text(
+                if (vehicle == null) "Add vehicle" else "Edit vehicle",
+                style = MaterialTheme.typography.headlineSmall
+            )
+            OutlinedTextField(
+                value = name,
+                onValueChange = { name = it },
+                label = { Text("Name") },
+                placeholder = { Text("e.g. Daily rider") },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Words),
+                modifier = Modifier.fillMaxWidth()
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 OutlinedTextField(
                     value = make,
                     onValueChange = { make = it },
                     label = { Text("Make") },
                     singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
+                    keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Words),
+                    modifier = Modifier.weight(1f)
                 )
                 OutlinedTextField(
                     value = model,
                     onValueChange = { model = it },
                     label = { Text("Model") },
                     singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
+                    keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Words),
+                    modifier = Modifier.weight(1f)
                 )
-                OutlinedTextField(
-                    value = year,
-                    onValueChange = { year = it.filter { ch -> ch.isDigit() } },
-                    label = { Text("Year") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-
-                var expanded by remember { mutableStateOf(false) }
-                ExposedDropdownMenuBox(
-                    expanded = expanded,
-                    onExpandedChange = { expanded = it }
-                ) {
-                    OutlinedTextField(
-                        value = fuelType.name.lowercase().replaceFirstChar { it.titlecase() },
-                        onValueChange = {},
-                        readOnly = true,
-                        label = { Text("Fuel Type") },
-                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
-                        modifier = Modifier.menuAnchor()
-                    )
-                    ExposedDropdownMenu(
-                        expanded = expanded,
-                        onDismissRequest = { expanded = false }
-                    ) {
-                        FuelType.entries.forEach { type ->
-                            DropdownMenuItem(
-                                text = { Text(type.name.lowercase().replaceFirstChar { it.titlecase() }) },
-                                onClick = {
-                                    fuelType = type
-                                    expanded = false
-                                }
-                            )
-                        }
+            }
+            OutlinedTextField(
+                value = year,
+                onValueChange = { year = it.filter { ch -> ch.isDigit() }.take(4) },
+                label = { Text("Year") },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                modifier = Modifier.fillMaxWidth()
+            )
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Fuel", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FuelType.entries.forEach { type ->
+                        FilterChip(
+                            selected = fuelType == type,
+                            onClick = { fuelType = type },
+                            label = { Text(type.name.lowercase().replaceFirstChar { it.titlecase() }) }
+                        )
                     }
                 }
-
-                OutlinedTextField(
-                    value = tankCapacity,
-                    onValueChange = { tankCapacity = it.filter { ch -> ch.isDigit() || ch == '.' } },
-                    label = { Text("Tank Capacity (L)") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-                OutlinedTextField(
-                    value = odometerOffset,
-                    onValueChange = { odometerOffset = it.filter { ch -> ch.isDigit() } },
-                    label = { Text("Odometer Offset (${if (unit == DistanceUnit.MILES) "mi" else "km"})") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-
-                Text(
-                    "Distance & Fuel Units",
-                    style = MaterialTheme.typography.bodyMedium
-                )
-                Row(
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    RadioButton(
+            }
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("Units", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+                    SegmentedButton(
                         selected = unit == DistanceUnit.KILOMETERS,
-                        onClick = { unit = DistanceUnit.KILOMETERS }
-                    )
-                    Text("km / L / L-per-100km")
-                    Spacer(modifier = Modifier.width(12.dp))
-                    RadioButton(
+                        onClick = { unit = DistanceUnit.KILOMETERS },
+                        shape = SegmentedButtonDefaults.itemShape(0, 2)
+                    ) { Text("km · L") }
+                    SegmentedButton(
                         selected = unit == DistanceUnit.MILES,
-                        onClick = { unit = DistanceUnit.MILES }
-                    )
-                    Text("mi / gal / mpg")
+                        onClick = { unit = DistanceUnit.MILES },
+                        shape = SegmentedButtonDefaults.itemShape(1, 2)
+                    ) { Text("mi · gal") }
                 }
             }
-        },
-        confirmButton = {
-            TextButton(
-                onClick = {
-                    if (name.isNotBlank()) {
-                        onAdd(
-                            (vehicle ?: Vehicle(name = name)).copy(
-                                name = name,
-                                make = make.ifBlank { null },
-                                model = model.ifBlank { null },
+            NumberField(
+                value = tankCapacity,
+                onValueChange = { tankCapacity = it },
+                label = "Tank capacity",
+                decimals = 1,
+                suffix = Units.fuelLabel(unit),
+                supportingText = "Needed to estimate fuel left and range",
+                modifier = Modifier.fillMaxWidth()
+            )
+            NumberField(
+                value = odometerOffset,
+                onValueChange = { odometerOffset = it },
+                label = "Odometer when you started tracking",
+                decimals = 0,
+                suffix = Units.distanceLabel(unit),
+                imeAction = ImeAction.Done,
+                modifier = Modifier.fillMaxWidth()
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Spacer(Modifier.weight(1f))
+                OutlinedButton(onClick = onDismiss) { Text("Cancel") }
+                Button(
+                    enabled = name.isNotBlank(),
+                    onClick = {
+                        onSave(
+                            (vehicle ?: Vehicle(name = name.trim())).copy(
+                                name = name.trim(),
+                                make = make.trim().ifBlank { null },
+                                model = model.trim().ifBlank { null },
                                 year = year.toIntOrNull(),
                                 fuelType = fuelType,
-                                tankCapacity = tankCapacity.toFloatOrNull(),
-                                odometerOffset = odometerOffset.toLongOrNull() ?: 0,
+                                tankCapacity = tankCapacity.toFloatOrNull()?.takeIf { it > 0f }
+                                    ?.let { Units.fuelToLiters(it, unit) },
+                                odometerOffset = odometerOffset.toFloatOrNull()
+                                    ?.let { Math.round(Units.distanceToKm(it, unit)).toLong() } ?: 0,
                                 odometerUnit = unit,
                                 updatedAt = System.currentTimeMillis()
                             )
                         )
                     }
-                },
-                enabled = name.isNotBlank()
-            ) {
-                Text(if (vehicle == null) "Add" else "Save")
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("Cancel")
+                ) { Text("Save") }
             }
         }
-    )
+    }
 }

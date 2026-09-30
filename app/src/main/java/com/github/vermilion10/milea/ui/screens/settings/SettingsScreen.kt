@@ -2,6 +2,12 @@ package com.github.vermilion10.milea.ui.screens.settings
 
 import android.content.Context
 import android.content.Intent
+import android.os.Build
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.selection.toggleable
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.semantics.Role
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
@@ -21,7 +27,13 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.github.vermilion10.milea.data.repository.ExpenseRepository
 import com.github.vermilion10.milea.data.repository.FillupRepository
+import com.github.vermilion10.milea.data.repository.AppearanceSettings
+import com.github.vermilion10.milea.data.repository.CurrencySettings
 import com.github.vermilion10.milea.data.repository.SettingsRepository
+import com.github.vermilion10.milea.data.repository.ThemeMode
+import com.github.vermilion10.milea.ui.components.rememberTripStarter
+import com.github.vermilion10.milea.util.MoneyFormat
+import com.github.vermilion10.milea.util.TrackingPreflight
 import com.github.vermilion10.milea.data.repository.TripRepository
 import com.github.vermilion10.milea.data.repository.VehicleRepository
 import com.github.vermilion10.milea.service.TripTrackingService
@@ -47,6 +59,24 @@ class SettingsViewModel @Inject constructor(
 
     val autoDetectEnabled = settingsRepository.autoDetectEnabled
         .stateIn(viewModelScope, SharingStarted.Lazily, false)
+
+    val appearance = settingsRepository.appearance
+        .stateIn(viewModelScope, SharingStarted.Eagerly, AppearanceSettings())
+
+    val currency = settingsRepository.currency
+        .stateIn(viewModelScope, SharingStarted.Eagerly, CurrencySettings())
+
+    fun setThemeMode(mode: ThemeMode) {
+        viewModelScope.launch { settingsRepository.setThemeMode(mode) }
+    }
+
+    fun setDynamicColor(enabled: Boolean) {
+        viewModelScope.launch { settingsRepository.setDynamicColor(enabled) }
+    }
+
+    fun setCurrency(symbol: String, decimals: Int) {
+        viewModelScope.launch { settingsRepository.setCurrency(symbol, decimals) }
+    }
 
     private val _showExportDialog = MutableStateFlow(false)
     val showExportDialog = _showExportDialog.asStateFlow()
@@ -172,30 +202,37 @@ class SettingsViewModel @Inject constructor(
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsScreen(
+    onBack: () -> Unit = {},
+    onOpenVehicles: () -> Unit = {},
     viewModel: SettingsViewModel = hiltViewModel()
 ) {
     val activeVehicle by viewModel.activeVehicle.collectAsState()
     val autoDetectEnabled by viewModel.autoDetectEnabled.collectAsState()
+    val appearance by viewModel.appearance.collectAsState()
+    val currency by viewModel.currency.collectAsState()
     val showExportDialog by viewModel.showExportDialog.collectAsState()
     val exportMessage by viewModel.exportMessage.collectAsState()
     val isExporting by viewModel.isExporting.collectAsState()
     val isBackingUp by viewModel.isBackingUp.collectAsState()
     val backupMessage by viewModel.backupMessage.collectAsState()
     val context = LocalContext.current
+    val snackbar = remember { SnackbarHostState() }
 
     var showPasswordDialog by remember { mutableStateOf(false) }
     var passwordAction by remember { mutableStateOf("backup") }
+    var showCurrencyDialog by remember { mutableStateOf(false) }
 
-    val permissionLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestMultiplePermissions()
-    ) { permissions ->
-        if (permissions[android.Manifest.permission.ACCESS_FINE_LOCATION] == true) {
-            viewModel.setAutoDetectEnabled(
-                context = context,
-                enabled = true,
-                vehicleId = activeVehicle?.id
-            )
-        }
+    // Turning auto-detect on goes through the same permission and
+    // location/battery checks as starting a trip by hand.
+    val enableAutoDetect = rememberTripStarter {
+        viewModel.setAutoDetectEnabled(context = context, enabled = true, vehicleId = activeVehicle?.id)
+    }
+
+    LaunchedEffect(exportMessage) {
+        exportMessage?.let { snackbar.showSnackbar(it); viewModel.clearExportMessage() }
+    }
+    LaunchedEffect(backupMessage) {
+        backupMessage?.let { snackbar.showSnackbar(it); viewModel.clearBackupMessage() }
     }
 
     val restoreLauncher = rememberLauncherForActivityResult(
@@ -220,240 +257,128 @@ fun SettingsScreen(
         topBar = {
             TopAppBar(
                 title = { Text("Settings") },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.surface,
-                    titleContentColor = MaterialTheme.colorScheme.onSurface
-                )
+                navigationIcon = {
+                    IconButton(onClick = onBack) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                    }
+                }
             )
-        }
+        },
+        snackbarHost = { SnackbarHost(snackbar) }
     ) { padding ->
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
                 .verticalScroll(rememberScrollState())
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
+                .padding(bottom = 24.dp)
         ) {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
-            ) {
-                Column(
-                    modifier = Modifier.padding(16.dp)
-                ) {
-                    Text(
-                        "Data Export",
-                        style = MaterialTheme.typography.titleMedium
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-
-                    Text(
-                        "Export ${activeVehicle?.name ?: "your vehicle"} data as CSV",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-
-                    Spacer(modifier = Modifier.height(16.dp))
-
-                    Button(
-                        onClick = { viewModel.setShowExportDialog(true) },
-                        enabled = activeVehicle != null && !isExporting,
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        if (isExporting) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(18.dp),
-                                strokeWidth = 2.dp,
-                                color = MaterialTheme.colorScheme.onPrimary
-                            )
-                        } else {
-                            Icon(Icons.Default.Download, contentDescription = null)
-                        }
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("Export Data")
-                    }
-                }
+            SettingsGroup("Vehicles") {
+                SettingsRow(
+                    icon = Icons.Default.Garage,
+                    title = "Manage vehicles",
+                    subtitle = activeVehicle?.let { "Selected: ${it.name}" } ?: "No vehicle yet",
+                    onClick = onOpenVehicles
+                )
             }
 
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
-            ) {
-                Column(
-                    modifier = Modifier.padding(16.dp)
-                ) {
-                    Text(
-                        "Automatic Trip Detection",
-                        style = MaterialTheme.typography.titleMedium
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-
-                    Text(
-                        "Automatically start recording when your vehicle moves and stop after it has been idle for 3 minutes.",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-
-                    Spacer(modifier = Modifier.height(8.dp))
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Text("Enabled", style = MaterialTheme.typography.bodyLarge)
-                        Switch(
-                            checked = autoDetectEnabled,
-                            onCheckedChange = { enabled ->
-                                if (enabled && !hasLocationPermission(context)) {
-                                    permissionLauncher.launch(
-                                        arrayOf(
-                                            android.Manifest.permission.ACCESS_FINE_LOCATION,
-                                            android.Manifest.permission.ACCESS_COARSE_LOCATION,
-                                            android.Manifest.permission.POST_NOTIFICATIONS
-                                        )
-                                    )
-                                    return@Switch
-                                }
-                                viewModel.setAutoDetectEnabled(
-                                    context = context,
-                                    enabled = enabled,
-                                    vehicleId = activeVehicle?.id
-                                )
-                            },
-                            enabled = activeVehicle != null
-                        )
-                    }
-                }
-            }
-
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
-            ) {
-                Column(
-                    modifier = Modifier.padding(16.dp)
-                ) {
-                    Text(
-                        "Backup & Restore",
-                        style = MaterialTheme.typography.titleMedium
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-
-                    Text(
-                        "Create an encrypted backup of all vehicle data or restore from a previous backup.",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-
-                    Spacer(modifier = Modifier.height(16.dp))
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        OutlinedButton(
-                            onClick = {
-                                passwordAction = "backup"
-                                showPasswordDialog = true
-                            },
-                            enabled = !isBackingUp,
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            Icon(Icons.Default.Backup, contentDescription = null)
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text("Backup")
-                        }
-                        OutlinedButton(
-                            onClick = { restoreLauncher.launch(arrayOf("*/*")) },
-                            enabled = !isBackingUp,
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            Icon(Icons.Default.Restore, contentDescription = null)
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text("Restore")
+            SettingsGroup("Appearance") {
+                Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+                    Text("Theme", style = MaterialTheme.typography.bodyLarge)
+                    Spacer(Modifier.height(8.dp))
+                    SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+                        val modes = listOf(ThemeMode.SYSTEM to "System", ThemeMode.LIGHT to "Light", ThemeMode.DARK to "Dark")
+                        modes.forEachIndexed { i, (mode, label) ->
+                            SegmentedButton(
+                                selected = appearance.themeMode == mode,
+                                onClick = { viewModel.setThemeMode(mode) },
+                                shape = SegmentedButtonDefaults.itemShape(i, modes.size)
+                            ) { Text(label) }
                         }
                     }
-
-                    if (isBackingUp) {
-                        Spacer(modifier = Modifier.height(8.dp))
-                        CircularProgressIndicator(
-                            modifier = Modifier
-                                .align(Alignment.CenterHorizontally)
-                                .size(24.dp),
-                            strokeWidth = 2.dp
-                        )
-                    }
-
-                    backupMessage?.let { message ->
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text(
-                            message,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = if (message.startsWith("Restore failed") || message.startsWith("Backup failed")) {
-                                MaterialTheme.colorScheme.error
-                            } else {
-                                MaterialTheme.colorScheme.primary
-                            }
-                        )
-                    }
                 }
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    SettingsSwitchRow(
+                        icon = Icons.Default.Palette,
+                        title = "Dynamic color",
+                        subtitle = "Use colors from your wallpaper",
+                        checked = appearance.dynamicColor,
+                        onCheckedChange = viewModel::setDynamicColor
+                    )
+                }
+                SettingsRow(
+                    icon = Icons.Default.Payments,
+                    title = "Currency",
+                    subtitle = "${currency.symbol.ifBlank { "No symbol" }} · ${currency.decimals} decimals · e.g. ${MoneyFormat(currency).format(125000f)}",
+                    onClick = { showCurrencyDialog = true }
+                )
             }
 
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
-            ) {
-                Column(
-                    modifier = Modifier.padding(16.dp)
-                ) {
-                    Text(
-                        "About",
-                        style = MaterialTheme.typography.titleMedium
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-
-                    Text(
-                        "Milea - Vehicle Trip & Fuel Tracker",
-                        style = MaterialTheme.typography.bodyMedium
-                    )
-                    Text(
-                        "Version ${com.github.vermilion10.milea.BuildConfig.VERSION_NAME}",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-
-                    Spacer(modifier = Modifier.height(16.dp))
-
-                    Text(
-                        "Track your vehicle trips, fuel consumption, and expenses with detailed analytics.",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+            SettingsGroup("Trip recording") {
+                SettingsSwitchRow(
+                    icon = Icons.Default.Sensors,
+                    title = "Automatic trip detection",
+                    subtitle = "Start recording when the vehicle moves, stop after 3 minutes idle",
+                    checked = autoDetectEnabled,
+                    enabled = activeVehicle != null,
+                    onCheckedChange = { enabled ->
+                        if (enabled) enableAutoDetect()
+                        else viewModel.setAutoDetectEnabled(context, false, activeVehicle?.id)
+                    }
+                )
+                val preflight = remember(autoDetectEnabled) { TrackingPreflight.check(context) }
+                if (preflight.batteryOptimized) {
+                    SettingsRow(
+                        icon = Icons.Default.BatteryAlert,
+                        title = "Allow background activity",
+                        subtitle = "Battery optimization can stop recording on long trips",
+                        onClick = {
+                            runCatching { context.startActivity(TrackingPreflight.batteryOptimizationIntent(context)) }
+                        }
                     )
                 }
             }
 
-            exportMessage?.let { message ->
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = CardDefaults.cardColors(
-                        containerColor = MaterialTheme.colorScheme.primaryContainer
-                    )
-                ) {
-                    Row(
-                        modifier = Modifier.padding(16.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Icon(
-                            Icons.Default.Info,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.primary
-                        )
-                        Spacer(modifier = Modifier.width(12.dp))
-                        Text(message)
-                    }
-                }
+            SettingsGroup("Data") {
+                SettingsRow(
+                    icon = Icons.Default.Download,
+                    title = "Export CSV",
+                    subtitle = "Share ${activeVehicle?.name ?: "vehicle"} data as spreadsheet files",
+                    enabled = activeVehicle != null && !isExporting,
+                    onClick = { viewModel.setShowExportDialog(true) },
+                    trailing = if (isExporting) {
+                        { CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp) }
+                    } else null
+                )
+                SettingsRow(
+                    icon = Icons.Default.Backup,
+                    title = "Back up",
+                    subtitle = "Password-protected copy of all vehicles and logs",
+                    enabled = !isBackingUp,
+                    onClick = {
+                        passwordAction = "backup"
+                        showPasswordDialog = true
+                    },
+                    trailing = if (isBackingUp) {
+                        { CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp) }
+                    } else null
+                )
+                SettingsRow(
+                    icon = Icons.Default.Restore,
+                    title = "Restore",
+                    subtitle = "Replace current data with a backup file",
+                    enabled = !isBackingUp,
+                    onClick = { restoreLauncher.launch(arrayOf("*/*")) }
+                )
+            }
+
+            SettingsGroup("About") {
+                SettingsRow(
+                    icon = Icons.Default.Info,
+                    title = "Milea",
+                    subtitle = "Version ${com.github.vermilion10.milea.BuildConfig.VERSION_NAME}",
+                    onClick = null
+                )
             }
         }
 
@@ -481,7 +406,129 @@ fun SettingsScreen(
                 }
             )
         }
+
+        if (showCurrencyDialog) {
+            CurrencyDialog(
+                current = currency,
+                onDismiss = { showCurrencyDialog = false },
+                onSave = { symbol, decimals ->
+                    viewModel.setCurrency(symbol, decimals)
+                    showCurrencyDialog = false
+                }
+            )
+        }
     }
+}
+
+@Composable
+private fun SettingsGroup(title: String, content: @Composable ColumnScope.() -> Unit) {
+    Column(modifier = Modifier.padding(top = 16.dp)) {
+        Text(
+            title,
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+        )
+        content()
+    }
+}
+
+@Composable
+private fun SettingsRow(
+    icon: ImageVector,
+    title: String,
+    subtitle: String?,
+    onClick: (() -> Unit)?,
+    enabled: Boolean = true,
+    trailing: (@Composable () -> Unit)? = null
+) {
+    ListItem(
+        headlineContent = { Text(title) },
+        supportingContent = subtitle?.let { { Text(it) } },
+        leadingContent = { Icon(icon, contentDescription = null) },
+        trailingContent = trailing,
+        modifier = if (onClick != null) Modifier.clickable(enabled = enabled, onClick = onClick) else Modifier
+    )
+}
+
+@Composable
+private fun SettingsSwitchRow(
+    icon: ImageVector,
+    title: String,
+    subtitle: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+    enabled: Boolean = true
+) {
+    ListItem(
+        headlineContent = { Text(title) },
+        supportingContent = { Text(subtitle) },
+        leadingContent = { Icon(icon, contentDescription = null) },
+        trailingContent = { Switch(checked = checked, onCheckedChange = null, enabled = enabled) },
+        modifier = Modifier.toggleable(
+            value = checked,
+            enabled = enabled,
+            role = Role.Switch,
+            onValueChange = onCheckedChange
+        )
+    )
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun CurrencyDialog(
+    current: CurrencySettings,
+    onDismiss: () -> Unit,
+    onSave: (String, Int) -> Unit
+) {
+    var symbol by remember { mutableStateOf(current.symbol) }
+    var decimals by remember { mutableIntStateOf(current.decimals) }
+    val presets = listOf("Rp" to 0, "$" to 2, "€" to 2, "£" to 2, "RM" to 2, "¥" to 0, "₹" to 2)
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Currency") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    presets.forEach { (s, d) ->
+                        FilterChip(
+                            selected = symbol == s && decimals == d,
+                            onClick = { symbol = s; decimals = d },
+                            label = { Text(s) }
+                        )
+                    }
+                }
+                OutlinedTextField(
+                    value = symbol,
+                    onValueChange = { symbol = it.take(4) },
+                    label = { Text("Symbol") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Column {
+                    Text("Decimal places", style = MaterialTheme.typography.labelLarge)
+                    Spacer(Modifier.height(8.dp))
+                    SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+                        (0..2).forEach { d ->
+                            SegmentedButton(
+                                selected = decimals == d,
+                                onClick = { decimals = d },
+                                shape = SegmentedButtonDefaults.itemShape(d, 3)
+                            ) { Text(d.toString()) }
+                        }
+                    }
+                }
+                Text(
+                    "Preview: ${MoneyFormat(CurrencySettings(symbol, decimals)).format(125000.5f)}",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        },
+        confirmButton = { TextButton(onClick = { onSave(symbol.trim(), decimals) }) { Text("Save") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
+    )
 }
 
 @Composable
@@ -584,11 +631,4 @@ private fun ExportOptionRow(
         )
         Text(label)
     }
-}
-
-private fun hasLocationPermission(context: Context): Boolean {
-    return androidx.core.content.ContextCompat.checkSelfPermission(
-        context,
-        android.Manifest.permission.ACCESS_FINE_LOCATION
-    ) == android.content.pm.PackageManager.PERMISSION_GRANTED
 }

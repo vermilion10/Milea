@@ -2,81 +2,52 @@ package com.github.vermilion10.milea.ui.navigation
 
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.outlined.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.navigation.NavDestination.Companion.hierarchy
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.currentBackStackEntryAsState
 
-sealed class BottomNavItem(
+enum class TopLevel(
     val route: String,
     val title: String,
-    val icon: androidx.compose.ui.graphics.vector.ImageVector
+    val icon: ImageVector,
+    val selectedIcon: ImageVector
 ) {
-    object Dashboard : BottomNavItem(
-        route = Screen.Dashboard.route,
-        title = "Dashboard",
-        icon = Icons.Default.Dashboard
-    )
-    
-    object Trips : BottomNavItem(
-        route = "trips_default",
-        title = "Trips",
-        icon = Icons.Default.Route
-    )
-    
-    object Fillups : BottomNavItem(
-        route = "fillups_default",
-        title = "Fuel",
-        icon = Icons.Default.LocalGasStation
-    )
-    
-    object Expenses : BottomNavItem(
-        route = "expenses_default",
-        title = "Expenses",
-        icon = Icons.Default.Receipt
-    )
-    
-    object Settings : BottomNavItem(
-        route = Screen.Settings.route,
-        title = "Settings",
-        icon = Icons.Default.Settings
-    )
+    Home(Screen.Dashboard.route, "Home", Icons.Outlined.Home, Icons.Filled.Home),
+    Trips(Screen.Trips.route, "Trips", Icons.Outlined.Route, Icons.Filled.Route),
+    Fuel(Screen.Fuel.route, "Fuel", Icons.Outlined.LocalGasStation, Icons.Filled.LocalGasStation),
+    Expenses(Screen.Expenses.route, "Expenses", Icons.Outlined.Receipt, Icons.Filled.Receipt),
+    Stats(Screen.Stats.route, "Stats", Icons.Outlined.BarChart, Icons.Filled.BarChart)
 }
 
 @Composable
-fun BottomNavigationBar(
-    navController: NavHostController
-) {
-    val items = listOf(
-        BottomNavItem.Dashboard,
-        BottomNavItem.Trips,
-        BottomNavItem.Fillups,
-        BottomNavItem.Expenses,
-        BottomNavItem.Settings
-    )
-    
+fun BottomNavigationBar(navController: NavHostController) {
+    val navBackStackEntry by navController.currentBackStackEntryAsState()
+    val destination = navBackStackEntry?.destination
+    // Detail screens (trip, settings, vehicles) hide the bar.
+    if (destination != null && TopLevel.entries.none { it.route == destination.route }) return
+
     NavigationBar {
-        val navBackStackEntry by navController.currentBackStackEntryAsState()
-        val currentRoute = navBackStackEntry?.destination?.route
-        
-        items.forEach { item ->
+        TopLevel.entries.forEach { item ->
+            val selected = destination?.hierarchy?.any { it.route == item.route } == true
             NavigationBarItem(
-                icon = { Icon(item.icon, contentDescription = item.title) },
+                icon = { Icon(if (selected) item.selectedIcon else item.icon, contentDescription = null) },
                 label = { Text(item.title) },
-                selected = currentRoute == item.route,
+                selected = selected,
                 onClick = { navController.navigateToTab(item.route) }
             )
         }
     }
 }
 
-// Shared navigation behavior for any top-level tab destination (the bottom bar
-// items, and any Quick Action shortcut that leads to the same destination as a
-// bottom bar tab). Pops back to the graph's start destination first and reuses
-// a saved instance of the target instead of stacking a fresh one, so the
-// back stack can't accumulate duplicate entries and the Dashboard tab always
-// cleanly returns regardless of how you navigated away from it.
+// Shared navigation behavior for any top-level tab destination. Pops back to
+// the graph's start destination first and reuses a saved instance of the
+// target instead of stacking a fresh one, so the back stack can't accumulate
+// duplicate entries and Home always cleanly returns.
 fun NavHostController.navigateToTab(route: String) {
     navigate(route) {
         graph.startDestinationRoute?.let { start ->
